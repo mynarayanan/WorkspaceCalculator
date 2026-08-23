@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cellcast — Anaplan Workspace Capacity Forecaster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0F1A;
+    --panel:#111A2B;
+    --panel-alt:#152036;
+    --line:#233047;
+    --line-soft:#1A2439;
+    --text:#EAF0F9;
+    --muted:#8CA0BE;
+    --muted-dim:#5E6E8C;
+    --accent:#3E7BFA;
+    --accent-soft:rgba(62,123,250,.14);
+    --current:#22C1A6;
+    --current-soft:rgba(34,193,166,.13);
+    --projected:#F2A93C;
+    --projected-soft:rgba(242,169,60,.13);
+    --risk:#F2545B;
+    --risk-soft:rgba(242,84,91,.13);
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(1200px 500px at 15% -10%, rgba(62,123,250,.10), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(34,193,166,.07), transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font-family:'Inter',system-ui,sans-serif;
+    line-height:1.5;
+    padding-bottom:80px;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .display{font-family:'Space Grotesk',sans-serif;}
+
+  a{color:var(--accent);}
+
+  .wrap{max-width:1160px;margin:0 auto;padding:0 28px;}
+
+  /* ---------------- HERO ---------------- */
+  header.hero{
+    position:relative;
+    overflow:hidden;
+    border-bottom:1px solid var(--line-soft);
+    padding:56px 0 40px;
+  }
+  .hero-inner{
+    display:grid;
+    grid-template-columns:1.15fr 0.85fr;
+    gap:40px;
+    align-items:center;
+  }
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--current);
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-bottom:18px;
+  }
+  .eyebrow::before{
+    content:"";
+    width:7px;height:7px;border-radius:2px;
+    background:var(--current);
+    box-shadow:0 0 0 3px var(--current-soft);
+  }
+  h1.title{
+    font-size:42px;
+    line-height:1.08;
+    margin:0 0 16px;
+    font-weight:700;
+    letter-spacing:-0.02em;
+  }
+  h1.title em{
+    font-style:normal;
+    color:var(--accent);
+  }
+  p.subtitle{
+    color:var(--muted);
+    font-size:16px;
+    max-width:52ch;
+    margin:0 0 26px;
+  }
+  .hero-stats{
+    display:flex;
+    gap:28px;
+    flex-wrap:wrap;
+  }
+  .hero-stat .num{font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:600;color:var(--text);}
+  .hero-stat .lbl{font-size:12px;color:var(--muted-dim);text-transform:uppercase;letter-spacing:.06em;margin-top:2px;}
+
+  /* signature cell-grid visual */
+  .grid-panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:18px;
+    position:relative;
+  }
+  .grid-panel .cap{
+    display:flex;justify-content:space-between;align-items:baseline;
+    font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted-dim);
+    margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em;
+  }
+  #cellGrid{display:grid;grid-template-columns:repeat(18,1fr);gap:3px;}
+  #cellGrid div{
+    aspect-ratio:1;border-radius:2px;background:var(--line-soft);
+    transition:background .5s ease, box-shadow .5s ease;
+  }
+  #cellGrid div.on{background:var(--current);}
+  #cellGrid div.new{background:var(--projected);box-shadow:0 0 6px rgba(242,169,60,.6);}
+  .grid-legend{display:flex;gap:16px;margin-top:12px;font-size:11px;color:var(--muted);}
+  .grid-legend span{display:inline-flex;align-items:center;gap:6px;}
+  .swatch{width:9px;height:9px;border-radius:2px;display:inline-block;}
+
+  /* ---------------- SECTIONS ---------------- */
+  section{padding:52px 0;border-bottom:1px solid var(--line-soft);}
+  section:last-of-type{border-bottom:none;}
+  .step-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px;}
+  .step-no{
+    font-family:'IBM Plex Mono',monospace;color:var(--accent);font-size:13px;
+    border:1px solid var(--line);padding:2px 8px;border-radius:20px;
+  }
+  h2{font-family:'Space Grotesk',sans-serif;font-size:24px;margin:0;font-weight:600;letter-spacing:-0.01em;}
+  .step-desc{color:var(--muted);font-size:14.5px;margin:8px 0 26px;max-width:70ch;}
+
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+  @media (max-width:880px){.two-col{grid-template-columns:1fr;} .hero-inner{grid-template-columns:1fr;}}
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:20px;
+  }
+  .card h3{
+    margin:0 0 4px;font-size:15px;font-family:'Space Grotesk',sans-serif;font-weight:600;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .card .hint{font-size:12.5px;color:var(--muted-dim);margin:0 0 12px;}
+  .format-tag{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--muted);
+    background:var(--panel-alt);border:1px solid var(--line);padding:1px 7px;border-radius:5px;
+  }
+
+  textarea{
+    width:100%;min-height:150px;resize:vertical;
+    background:var(--bg);
+    border:1px solid var(--line);
+    border-radius:8px;
+    color:var(--text);
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;
+    padding:12px;
+    outline:none;
+  }
+  textarea:focus{border-color:var(--accent);}
+  textarea::placeholder{color:var(--muted-dim);}
+
+  .row-actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center;}
+
+  button{
+    font-family:'Inter',sans-serif;font-weight:600;font-size:13.5px;
+    border-radius:8px;border:1px solid var(--line);
+    padding:9px 16px;cursor:pointer;
+    background:var(--panel-alt);color:var(--text);
+    transition:.15s border-color, .15s background, .15s transform;
+  }
+  button:hover{border-color:var(--accent);}
+  button:active{transform:translateY(1px);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#04122F;}
+  button.primary:hover{background:#5B90FB;}
+  button.ghost{background:transparent;}
+  button.big{padding:13px 26px;font-size:14.5px;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+
+  .status-line{font-size:12.5px;color:var(--muted);margin-top:10px;min-height:16px;font-family:'IBM Plex Mono',monospace;}
+  .status-line.err{color:var(--risk);}
+  .status-line.ok{color:var(--current);}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line-soft);}
+  th{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.06em;color:var(--muted-dim);font-weight:600;
+  }
+  td.num, th.num{text-align:right;font-family:'IBM Plex Mono',monospace;}
+  tr:last-child td{border-bottom:none;}
+
+  .snapshot-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px;}
+  @media (max-width:880px){.snapshot-grid{grid-template-columns:repeat(2,1fr);}}
+  .metric{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px;
+  }
+  .metric .m-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-dim);font-family:'IBM Plex Mono',monospace;}
+  .metric .m-val{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;margin-top:6px;}
+
+  /* config form */
+  .config-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:500;}
+  select, input[type=text], input[type=number]{
+    width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    color:var(--text);padding:10px 12px;font-size:13.5px;font-family:'Inter',sans-serif;outline:none;
+  }
+  select:focus, input:focus{border-color:var(--accent);}
+  .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .field-grid.three{grid-template-columns:1fr 1fr 1fr;}
+  @media (max-width:640px){.field-grid,.field-grid.three{grid-template-columns:1fr;}}
+  .checklist{display:flex;flex-wrap:wrap;gap:8px;}
+  .chip{
+    font-size:12.5px;padding:7px 12px;border:1px solid var(--line);border-radius:20px;
+    cursor:pointer;user-select:none;color:var(--muted);background:var(--bg);
+  }
+  .chip.sel{border-color:var(--accent);color:var(--text);background:var(--accent-soft);}
+  .divider{height:1px;background:var(--line-soft);margin:20px 0;}
+
+  /* results */
+  .impact-banner{
+    display:flex;align-items:center;gap:16px;
+    background:var(--panel-alt);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px 20px;margin-bottom:24px;
+  }
+  .impact-banner .pct{font-family:'IBM Plex Mono',monospace;font-size:28px;font-weight:600;}
+  .impact-banner .pct.risk{color:var(--risk);}
+  .impact-banner .pct.mild{color:var(--projected);}
+  .impact-banner .pct.low{color:var(--current);}
+  .impact-banner .txt{color:var(--muted);font-size:13.5px;line-height:1.5;}
+  .impact-banner .txt b{color:var(--text);}
+
+  .compare-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:26px;}
+  @media (max-width:880px){.compare-grid{grid-template-columns:1fr;}}
+  .compare-card{border-radius:var(--radius);border:1px solid var(--line);padding:16px;background:var(--panel);}
+  .compare-card.current{border-top:3px solid var(--current);}
+  .compare-card.projected{border-top:3px solid var(--projected);}
+  .compare-card.delta{border-top:3px solid var(--accent);}
+  .compare-card .c-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-dim);font-family:'IBM Plex Mono',monospace;margin-bottom:10px;}
+  .compare-card .c-row{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--muted);}
+  .compare-card .c-row b{color:var(--text);font-family:'IBM Plex Mono',monospace;font-weight:600;}
+
+  .bar-row{display:grid;grid-template-columns:110px 1fr 90px;align-items:center;gap:10px;margin:8px 0;font-size:12.5px;}
+  .bar-track{height:9px;background:var(--line-soft);border-radius:6px;overflow:hidden;}
+  .bar-fill{height:100%;border-radius:6px;}
+  .bar-fill.current{background:var(--current);}
+  .bar-fill.projected{background:var(--projected);}
+
+  .tag{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;padding:2px 7px;border-radius:5px;
+  }
+  .tag.new{background:var(--projected-soft);color:var(--projected);}
+  .tag.grown{background:var(--accent-soft);color:var(--accent);}
+  .tag.flat{background:var(--line-soft);color:var(--muted-dim);}
+
+  footer{padding:34px 0 0;color:var(--muted-dim);font-size:12px;text-align:center;}
+  .disclaimer{
+    max-width:760px;margin:0 auto 18px;font-size:12px;color:var(--muted-dim);
+    background:var(--panel);border:1px solid var(--line-soft);border-radius:8px;padding:14px 16px;
+  }
+
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap hero-inner">
+    <div>
+      <div class="eyebrow">Anaplan · Admin Capacity Planning</div>
+      <h1 class="title">Know the cell cost<br>before you build <em>it</em>.</h1>
+      <p class="subtitle">Paste your current Lists and Line Items, describe the change an Admin is about to make, and get a projected workspace size — before it hits production.</p>
+      <div class="hero-stats">
+        <div class="hero-stat"><div class="num" id="heroLists">0</div><div class="lbl">Lists loaded</div></div>
+        <div class="hero-stat"><div class="num" id="heroItems">0</div><div class="lbl">Line items loaded</div></div>
+        <div class="hero-stat"><div class="num" id="heroModules">0</div><div class="lbl">Modules detected</div></div>
+      </div>
+    </div>
+    <div class="grid-panel">
+      <div class="cap"><span>Cell matrix</span><span id="gridCapRight">list rows × line item cols</span></div>
+      <div id="cellGrid"></div>
+      <div class="grid-legend">
+        <span><span class="swatch" style="background:var(--current)"></span>existing cells</span>
+        <span><span class="swatch" style="background:var(--projected)"></span>added by change</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- STEP 1: BASE INFO -->
+  <section id="step1">
+    <div class="step-head"><span class="step-no">01</span><h2>Base workspace info</h2></div>
+    <p class="step-desc">Paste your current Lists and Line Items directly from Excel or the Anaplan UI. Tab or comma separated, with or without a header row.</p>
+
+    <div class="two-col">
+      <div class="card">
+        <h3>Lists <span class="format-tag">Anaplan List Export format</span></h3>
+        <p class="hint">Paste directly from Anaplan's List Settings export (tab-separated), including the header row. Columns expected, in order:<br>
+        <span class="mono" style="font-size:10.5px;color:var(--muted-dim);">Name · Top Level · Parent Hierarchy · Selective Access · Production Data · Managed By · Has Workflow · Properties · Subsets · Numbered · Display Name Property · Is Organization · Category · Data Tags · Item Count · Notes · Referenced in Applies To · Referenced as Format · Referenced in Formula · Next item index · Use Top Level As Default Page · Delegated</span></p>
+        <textarea id="listsInput" placeholder="Name	Top Level	Parent Hierarchy	Selective Access	Production Data	Managed By	Has Workflow	Properties	Subsets	Numbered	Display Name Property	Is Organization	Category	Data Tags	Item Count	Notes	Referenced in Applies To	Referenced as Format	Referenced in Formula	Next item index	Use Top Level As Default Page	Delegated
+Users				TRUE		FALSE			FALSE		FALSE			30					606	FALSE	FALSE
+For Heat Map - I			FALSE	FALSE		FALSE			FALSE		FALSE			5			'Map Chart -US'.'Heat Map - I'		6	FALSE	FALSE"></textarea>
+        <div class="row-actions">
+          <button class="primary" onclick="parseAll()">Parse lists</button>
+          <button class="ghost" onclick="loadSampleLists()">Load sample data</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Line items <span class="format-tag">Module, Line Item, Applies To, Data Type, Summary, Time Periods, Versions</span></h3>
+        <p class="hint">"Applies To" = list names separated by <b>;</b> (dimensions), or "-" for none.</p>
+        <textarea id="lineItemsInput" placeholder="Opex Planning, Budget Amount, Cost Center;Region, Number, Sum, 12, 3
+Revenue Planning, Forecast Units, Product;Region, Number, Sum, 12, 3
+Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></textarea>
+        <div class="row-actions">
+          <button class="primary" onclick="parseAll()">Parse line items</button>
+          <button class="ghost" onclick="loadSampleLineItems()">Load sample data</button>
+        </div>
+      </div>
+    </div>
+    <div class="status-line" id="parseStatus">Paste your data above, or load the sample set to try it out.</div>
+  </section>
+
+  <!-- STEP 2: CURRENT SNAPSHOT -->
+  <section id="step2" class="hidden">
+    <div class="step-head"><span class="step-no">02</span><h2>Current workspace snapshot</h2></div>
+    <p class="step-desc">This is what your parsed Lists and Line Items add up to today, before any change.</p>
+
+    <div class="snapshot-grid">
+      <div class="metric"><div class="m-lbl">Total cells</div><div class="m-val mono" id="curTotalCells">—</div></div>
+      <div class="metric"><div class="m-lbl">Est. size (MB)</div><div class="m-val mono" id="curTotalMb">—</div></div>
+      <div class="metric"><div class="m-lbl">Modules</div><div class="m-val mono" id="curModuleCount">—</div></div>
+      <div class="metric"><div class="m-lbl">Line items</div><div class="m-val mono" id="curLineItemCount">—</div></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:22px;">
+      <div class="card">
+        <h3>Lists parsed</h3>
+        <table id="listsTable">
+          <thead><tr><th>Name</th><th class="num">Item count</th><th>Hierarchy</th><th>Numbered</th><th>Production data</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Module breakdown</h3>
+        <table id="currentTable">
+          <thead><tr><th>Module</th><th class="num">Line items</th><th class="num">Cells</th><th class="num">Est. MB</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 3: CHANGE CONFIG -->
+  <section id="step3" class="hidden">
+    <div class="step-head"><span class="step-no">03</span><h2>Describe the Admin's change</h2></div>
+    <p class="step-desc">Pick what's about to change in the workspace. Fields update based on your selection.</p>
+
+    <div class="config-card">
+      <div class="field">
+        <label>Change type</label>
+        <select id="changeType" onchange="renderChangeForm()">
+          <option value="add_list">Add a new List</option>
+          <option value="grow_list">Grow an existing List (add members)</option>
+          <option value="add_line_items">Add new Line Item(s) to an existing Module</option>
+          <option value="add_module">Add a brand-new Module</option>
+        </select>
+      </div>
+
+      <div id="changeFormArea"></div>
+
+      <div class="row-actions">
+        <button class="primary big" onclick="predictImpact()">Predict impact</button>
+      </div>
+      <div class="status-line" id="changeStatus"></div>
+    </div>
+  </section>
+
+  <!-- STEP 4: RESULTS -->
+  <section id="step4" class="hidden">
+    <div class="step-head"><span class="step-no">04</span><h2>Projected impact</h2></div>
+    <p class="step-desc">Current workspace vs. projected workspace after the requested change, and where the impact lands.</p>
+
+    <div class="impact-banner">
+      <div class="pct" id="impactPct">—</div>
+      <div class="txt" id="impactNarrative">Run a prediction to see the impact summary here.</div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="compare-card current">
+        <div class="c-lbl">Current</div>
+        <div class="c-row"><span>Total cells</span><b id="cCells">—</b></div>
+        <div class="c-row"><span>Est. size</span><b id="cMb">—</b></div>
+        <div class="c-row"><span>Modules</span><b id="cMods">—</b></div>
+      </div>
+      <div class="compare-card projected">
+        <div class="c-lbl">Projected</div>
+        <div class="c-row"><span>Total cells</span><b id="pCells">—</b></div>
+        <div class="c-row"><span>Est. size</span><b id="pMb">—</b></div>
+        <div class="c-row"><span>Modules</span><b id="pMods">—</b></div>
+      </div>
+      <div class="compare-card delta">
+        <div class="c-lbl">Delta</div>
+        <div class="c-row"><span>Cells added</span><b id="dCells">—</b></div>
+        <div class="c-row"><span>Size added</span><b id="dMb">—</b></div>
+        <div class="c-row"><span>% change</span><b id="dPct">—</b></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;">
+      <h3>Current vs projected, by module</h3>
+      <div id="barChart"></div>
+    </div>
+
+    <div class="card">
+      <h3>Module-level detail</h3>
+      <table id="resultTable">
+        <thead><tr><th>Module</th><th class="num">Current cells</th><th class="num">Projected cells</th><th class="num">Δ %</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="disclaimer">
+    <b>Model note:</b> Anaplan does not publish its internal workspace-sizing formula. This tool approximates cell volume as
+    <span class="mono">(list dimension sizes) × (time periods) × (versions) × (1 + summary overhead)</span>, then applies a per-data-type byte weight for an
+    indicative MB figure. Use this for directional "before vs after" planning — validate final numbers against Anaplan's own workspace usage screen before making capacity or licensing decisions.
+  </div>
+
+  <footer>Cellcast — Anaplan Workspace Capacity Forecaster</footer>
+</div>
+
+<script>
+/* ===================== DATA MODEL & PARSING ===================== */
+let LISTS = {};       // name -> {name, count, hierarchy}
+let LINE_ITEMS = [];  // [{module, name, appliesTo[], dataType, summary, timePeriods, versions}]
+
+const SUMMARY_OVERHEAD = {
+  'none':0.0,'sum':0.10,'average':0.10,'min':0.10,'max':0.10,
+  'weighted average':0.15,'ratio':0.15,'formula':0.20
+};
+const BYTES_PER_CELL = {
+  'number':8,'boolean':1,'text':16,'list':4,'time':4,'currency':8,'none':4
+};
+
+const SAMPLE_LISTS = `Name\tTop Level\tParent Hierarchy\tSelective Access\tProduction Data\tManaged By\tHas Workflow\tProperties\tSubsets\tNumbered\tDisplay Name Property\tIs Organization\tCategory\tData Tags\tItem Count\tNotes\tReferenced in Applies To\tReferenced as Format\tReferenced in Formula\tNext item index\tUse Top Level As Default Page\tDelegated
+Users\t\t\t\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t30\t\t\t\t\t606\tFALSE\tFALSE
+For Heat Map - I\t\t\tFALSE\tFALSE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t5\t\t\t'Map Chart -US'.'Heat Map - I'\t\t6\tFALSE\tFALSE
+Cost Center\t\t\tFALSE\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t180\t\t\t\t\t181\tFALSE\tFALSE
+Product\t\t\tFALSE\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t1200\t\t\t\t\t1201\tFALSE\tFALSE
+Employee\t\t\tFALSE\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t950\t\t\t\t\t951\tFALSE\tFALSE
+Region\t\tRegion Group\tFALSE\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t12\t\t\t\t\t13\tFALSE\tFALSE`;
+
+const SAMPLE_LINE_ITEMS = `Opex Planning, Budget Amount, Cost Center;Region, Number, Sum, 12, 3
+Opex Planning, Actuals Amount, Cost Center;Region, Number, Sum, 12, 3
+Opex Planning, Variance %, Cost Center;Region, Number, Formula, 12, 3
+Revenue Planning, Forecast Units, Product;Region, Number, Sum, 12, 3
+Revenue Planning, Forecast Price, Product;Region, Number, Average, 12, 3
+Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1
+Workforce Planning, FTE Ratio, Employee;Cost Center, Number, Ratio, 12, 1`;
+
+function loadSampleLists(){ document.getElementById('listsInput').value = SAMPLE_LISTS; parseAll(); }
+function loadSampleLineItems(){ document.getElementById('lineItemsInput').value = SAMPLE_LINE_ITEMS; parseAll(); }
+
+function splitRow(row){
+  row = row.trim();
+  return (row.includes('\t') ? row.split('\t') : row.split(',')).map(s=>s.trim());
+}
+
+// Column order matches Anaplan's native List Settings export:
+// Name, Top Level, Parent Hierarchy, Selective Access, Production Data, Managed By,
+// Has Workflow, Properties, Subsets, Numbered, Display Name Property, Is Organization,
+// Category, Data Tags, Item Count, Notes, Referenced in Applies To, Referenced as Format,
+// Referenced in Formula, Next item index, Use Top Level As Default Page, Delegated
+const LIST_COLS = [
+  'name','topLevel','parentHierarchy','selectiveAccess','productionData','managedBy',
+  'hasWorkflow','properties','subsets','numbered','displayNameProperty','isOrganization',
+  'category','dataTags','itemCount','notes','refAppliesTo','refFormat','refFormula',
+  'nextItemIndex','useTopLevelDefault','delegated'
+];
+const LIST_BOOL_COLS = new Set(['selectiveAccess','productionData','hasWorkflow','numbered',
+  'isOrganization','useTopLevelDefault','delegated']);
+
+function parseLists(text){
+  const out = {};
+  text.trim().split('\n').forEach(line=>{
+    if(!line.trim()) return;
+    const cols = splitRow(line);
+    if(cols[0].toLowerCase() === 'name') return; // header row
+    if(!cols[0]) return;
+
+    const rec = { name: cols[0] };
+    LIST_COLS.forEach((key, i)=>{
+      if(key === 'name') return;
+      const raw = cols[i] !== undefined ? cols[i] : '';
+      rec[key] = LIST_BOOL_COLS.has(key) ? raw.trim().toUpperCase() === 'TRUE' : raw.trim();
+    });
+
+    const itemCount = parseInt((rec.itemCount || '0').replace(/[,\s]/g,''), 10);
+    rec.count = isNaN(itemCount) ? 0 : itemCount;               // used by the calc engine
+    rec.hierarchy = rec.parentHierarchy ? 'Parent-Child' : 'Flat'; // used by the calc engine
+    rec.nextItemIndex = parseInt(rec.nextItemIndex, 10) || null;
+
+    out[rec.name] = rec;
+  });
+  return out;
+}
+
+function parseLineItems(text){
+  const out = [];
+  text.trim().split('\n').forEach(line=>{
+    if(!line.trim()) return;
+    const cols = splitRow(line);
+    if(['module','module name'].includes(cols[0].toLowerCase())) return;
+    if(cols.length < 2) return;
+    const module = cols[0], name = cols[1];
+    const appliesRaw = cols[2] || '-';
+    const appliesTo = ['-','',undefined,'None'].includes(appliesRaw) ? [] :
+      appliesRaw.split(';').map(s=>s.trim()).filter(Boolean);
+    const dataType = cols[3] || 'Number';
+    const summary = cols[4] || 'None';
+    const timePeriods = parseInt(cols[5],10) || 0;
+    const versions = parseInt(cols[6],10) || 1;
+    out.push({ module, name, appliesTo, dataType, summary, timePeriods, versions });
+  });
+  return out;
+}
+
+/* ===================== CORE CALCULATION ===================== */
+function computeWorkspace(lists, lineItems){
+  const modules = {}; // module -> {cells, sizeMb, lineItems}
+  let totalCells = 0, totalMb = 0;
+  const liResults = [];
+
+  lineItems.forEach(li=>{
+    let dimSize = 1;
+    li.appliesTo.forEach(ln=>{ const l = lists[ln]; dimSize *= l ? l.count : 1; });
+    const timeFactor = li.timePeriods > 0 ? li.timePeriods : 1;
+    const versionFactor = li.versions > 0 ? li.versions : 1;
+    const baseCells = dimSize * timeFactor * versionFactor;
+    const overhead = SUMMARY_OVERHEAD[(li.summary||'none').toLowerCase()] ?? 0;
+    const cells = baseCells * (1 + overhead);
+    const bpc = BYTES_PER_CELL[(li.dataType||'none').toLowerCase()] ?? 4;
+    const sizeMb = (cells * bpc) / 1e6;
+
+    liResults.push({ module: li.module, name: li.name, dimSize, cells, sizeMb });
+    totalCells += cells; totalMb += sizeMb;
+
+    if(!modules[li.module]) modules[li.module] = { cells:0, sizeMb:0, lineItems:0 };
+    modules[li.module].cells += cells;
+    modules[li.module].sizeMb += sizeMb;
+    modules[li.module].lineItems += 1;
+  });
+
+  return { totalCells, totalMb, modules, liResults };
+}
+
+/* ===================== STEP 1: PARSE + UI SYNC ===================== */
+function parseAll(){
+  const listsText = document.getElementById('listsInput').value;
+  const liText = document.getElementById('lineItemsInput').value;
+  const statusEl = document.getElementById('parseStatus');
+
+  LISTS = parseLists(listsText);
+  LINE_ITEMS = parseLineItems(liText);
+
+  const listCount = Object.keys(LISTS).length;
+  const liCount = LINE_ITEMS.length;
+  const moduleSet = new Set(LINE_ITEMS.map(li=>li.module));
+
+  document.getElementById('heroLists').textContent = listCount;
+  document.getElementById('heroItems').textContent = liCount;
+  document.getElementById('heroModules').textContent = moduleSet.size;
+
+  if(listCount === 0 && liCount === 0){
+    statusEl.textContent = 'Paste your data above, or load the sample set to try it out.';
+    statusEl.className = 'status-line';
+    document.getElementById('step2').classList.add('hidden');
+    document.getElementById('step3').classList.add('hidden');
+    document.getElementById('step4').classList.add('hidden');
+    renderCellGrid(0,0,0);
+    return;
+  }
+
+  let unresolved = [];
+  LINE_ITEMS.forEach(li=> li.appliesTo.forEach(ln=>{ if(!LISTS[ln] && !unresolved.includes(ln)) unresolved.push(ln); }));
+
+  statusEl.className = unresolved.length ? 'status-line err' : 'status-line ok';
+  statusEl.textContent = unresolved.length
+    ? `Parsed ${listCount} lists, ${liCount} line items. Warning: line items reference unknown list(s): ${unresolved.join(', ')} — treated as size 1.`
+    : `Parsed ${listCount} lists and ${liCount} line items across ${moduleSet.size} modules.`;
+
+  renderCurrentSnapshot();
+  populateChangeFormOptions();
+  document.getElementById('step2').classList.remove('hidden');
+  document.getElementById('step3').classList.remove('hidden');
+  document.getElementById('step4').classList.add('hidden');
+}
+
+function renderCellGrid(listCount, liCount, newFraction){
+  const grid = document.getElementById('cellGrid');
+  grid.innerHTML = '';
+  const total = 18*10;
+  const onCount = Math.round(Math.min(0.85, (listCount+liCount)/40) * total);
+  const newCount = Math.round(onCount * (newFraction||0));
+  for(let i=0;i<total;i++){
+    const d = document.createElement('div');
+    if(i < newCount) d.className = 'new';
+    else if(i < onCount) d.className = 'on';
+    grid.appendChild(d);
+  }
+}
+
+function fmt(n){ return Math.round(n).toLocaleString('en-US'); }
+function fmtMb(n){ return n.toLocaleString('en-US', {maximumFractionDigits:2, minimumFractionDigits:2}) + ' MB'; }
+
+function renderCurrentSnapshot(){
+  const result = computeWorkspace(LISTS, LINE_ITEMS);
+  document.getElementById('curTotalCells').textContent = fmt(result.totalCells);
+  document.getElementById('curTotalMb').textContent = fmtMb(result.totalMb);
+  document.getElementById('curModuleCount').textContent = Object.keys(result.modules).length;
+  document.getElementById('curLineItemCount').textContent = LINE_ITEMS.length;
+
+  const tbody = document.querySelector('#currentTable tbody');
+  tbody.innerHTML = '';
+  Object.entries(result.modules).sort((a,b)=>b[1].cells-a[1].cells).forEach(([mod, m])=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${mod}</td><td class="num">${m.lineItems}</td><td class="num">${fmt(m.cells)}</td><td class="num">${fmtMb(m.sizeMb)}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const listsBody = document.querySelector('#listsTable tbody');
+  listsBody.innerHTML = '';
+  Object.values(LISTS).sort((a,b)=>b.count-a.count).forEach(l=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${l.name}</td><td class="num">${l.count.toLocaleString()}</td><td>${l.hierarchy}</td><td>${l.numbered ? 'Yes' : 'No'}</td><td>${l.productionData ? 'Yes' : 'No'}</td>`;
+    listsBody.appendChild(tr);
+  });
+
+  renderCellGrid(Object.keys(LISTS).length, LINE_ITEMS.length, 0);
+  window._currentResult = result;
+}
+
+/* ===================== STEP 3: CHANGE FORM ===================== */
+function populateChangeFormOptions(){ renderChangeForm(); }
+
+function moduleOptions(){ return [...new Set(LINE_ITEMS.map(li=>li.module))]; }
+function listOptions(){ return Object.keys(LISTS); }
+
+function chipRow(id, options){
+  return `<div class="checklist" id="${id}">` +
+    options.map(o=>`<span class="chip" data-val="${o}" onclick="toggleChip(this)">${o}</span>`).join('') +
+  `</div>`;
+}
+function toggleChip(el){ el.classList.toggle('sel'); }
+function selectedChips(id){ return [...document.querySelectorAll('#'+id+' .chip.sel')].map(c=>c.dataset.val); }
+
+function dataTypeSelect(id){
+  return `<select id="${id}">
+    <option>Number</option><option>Text</option><option>Boolean</option>
+    <option>List</option><option>Time</option><option>Currency</option>
+  </select>`;
+}
+function summarySelect(id){
+  return `<select id="${id}">
+    <option>None</option><option>Sum</option><option>Average</option><option>Min</option>
+    <option>Max</option><option>Weighted Average</option><option>Ratio</option><option>Formula</option>
+  </select>`;
+}
+
+function renderChangeForm(){
+  const type = document.getElementById('changeType').value;
+  const area = document.getElementById('changeFormArea');
+  const mods = moduleOptions(), lists = listOptions();
+
+  if(type === 'add_list'){
+    area.innerHTML = `
+      <div class="field-grid">
+        <div class="field"><label>New list name</label><input type="text" id="f_newListName" placeholder="e.g. Business Unit"></div>
+        <div class="field"><label>Number of items</label><input type="number" id="f_newListCount" placeholder="e.g. 25" min="1"></div>
+      </div>
+      <div class="field">
+        <label>Apply as a dimension to these existing modules (all line items in the selected module(s) will be multiplied by this new list's size)</label>
+        ${chipRow('f_newListModules', mods)}
+      </div>`;
+  }
+  else if(type === 'grow_list'){
+    area.innerHTML = `
+      <div class="field-grid">
+        <div class="field"><label>Existing list</label>
+          <select id="f_growListName">${lists.map(l=>`<option value="${l}">${l} (currently ${LISTS[l].count.toLocaleString()})</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Additional items to add</label><input type="number" id="f_growCount" placeholder="e.g. 300" min="1"></div>
+      </div>`;
+  }
+  else if(type === 'add_line_items'){
+    area.innerHTML = `
+      <div class="field-grid">
+        <div class="field"><label>Target module</label>
+          <select id="f_liModule">${mods.map(m=>`<option value="${m}">${m}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Number of new line items</label><input type="number" id="f_liCount" placeholder="e.g. 4" min="1"></div>
+      </div>
+      <div class="field"><label>Dimensioned by (lists)</label>${chipRow('f_liDims', lists)}</div>
+      <div class="field-grid three">
+        <div class="field"><label>Data type</label>${dataTypeSelect('f_liDataType')}</div>
+        <div class="field"><label>Summary method</label>${summarySelect('f_liSummary')}</div>
+        <div class="field"><label>Versions</label><input type="number" id="f_liVersions" value="1" min="1"></div>
+      </div>
+      <div class="field"><label>Time periods (0 = not time scaled, e.g. 12 for monthly × 1yr)</label><input type="number" id="f_liTime" value="0" min="0"></div>`;
+  }
+  else if(type === 'add_module'){
+    area.innerHTML = `
+      <div class="field-grid">
+        <div class="field"><label>New module name</label><input type="text" id="f_modName" placeholder="e.g. Capex Planning"></div>
+        <div class="field"><label>Number of line items</label><input type="number" id="f_modCount" placeholder="e.g. 6" min="1"></div>
+      </div>
+      <div class="field"><label>Dimensioned by (lists)</label>${chipRow('f_modDims', lists)}</div>
+      <div class="field-grid three">
+        <div class="field"><label>Data type</label>${dataTypeSelect('f_modDataType')}</div>
+        <div class="field"><label>Summary method</label>${summarySelect('f_modSummary')}</div>
+        <div class="field"><label>Versions</label><input type="number" id="f_modVersions" value="1" min="1"></div>
+      </div>
+      <div class="field"><label>Time periods (0 = not time scaled, e.g. 12 for monthly × 1yr)</label><input type="number" id="f_modTime" value="0" min="0"></div>`;
+  }
+}
+
+/* ===================== CHANGE SIMULATORS ===================== */
+function cloneState(){
+  return [ JSON.parse(JSON.stringify(LISTS)), JSON.parse(JSON.stringify(LINE_ITEMS)) ];
+}
+
+function applyChange(){
+  const type = document.getElementById('changeType').value;
+  let [lists, lineItems] = cloneState();
+  let desc = '';
+
+  if(type === 'add_list'){
+    const name = document.getElementById('f_newListName').value.trim();
+    const count = parseInt(document.getElementById('f_newListCount').value, 10);
+    const mods = selectedChips('f_newListModules');
+    if(!name || !count) return { error: 'Enter a new list name and item count.' };
+    lists[name] = { name, count, hierarchy: 'Flat' };
+    lineItems.forEach(li=>{ if(mods.includes(li.module) && !li.appliesTo.includes(name)) li.appliesTo.push(name); });
+    desc = `Add List "${name}" (${count.toLocaleString()} items)` + (mods.length ? ` as a dimension on: ${mods.join(', ')}` : ' (not yet wired into any module)');
+  }
+  else if(type === 'grow_list'){
+    const name = document.getElementById('f_growListName').value;
+    const add = parseInt(document.getElementById('f_growCount').value, 10);
+    if(!name || !add) return { error: 'Choose a list and an additional item count.' };
+    const before = lists[name].count;
+    lists[name].count += add;
+    desc = `Grow List "${name}" by ${add.toLocaleString()} items (${before.toLocaleString()} → ${lists[name].count.toLocaleString()})`;
+  }
+  else if(type === 'add_line_items'){
+    const module = document.getElementById('f_liModule').value;
+    const count = parseInt(document.getElementById('f_liCount').value, 10);
+    const dims = selectedChips('f_liDims');
+    const dataType = document.getElementById('f_liDataType').value;
+    const summary = document.getElementById('f_liSummary').value;
+    const versions = parseInt(document.getElementById('f_liVersions').value,10) || 1;
+    const timePeriods = parseInt(document.getElementById('f_liTime').value,10) || 0;
+    if(!module || !count) return { error: 'Choose a module and number of new line items.' };
+    for(let i=1;i<=count;i++){
+      lineItems.push({ module, name:`New Line Item ${i}`, appliesTo:[...dims], dataType, summary, timePeriods, versions });
+    }
+    desc = `Add ${count} ${dataType} line item(s) to module "${module}" (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
+  }
+  else if(type === 'add_module'){
+    const module = document.getElementById('f_modName').value.trim();
+    const count = parseInt(document.getElementById('f_modCount').value, 10);
+    const dims = selectedChips('f_modDims');
+    const dataType = document.getElementById('f_modDataType').value;
+    const summary = document.getElementById('f_modSummary').value;
+    const versions = parseInt(document.getElementById('f_modVersions').value,10) || 1;
+    const timePeriods = parseInt(document.getElementById('f_modTime').value,10) || 0;
+    if(!module || !count) return { error: 'Enter a new module name and number of line items.' };
+    for(let i=1;i<=count;i++){
+      lineItems.push({ module, name:`${module} Line Item ${i}`, appliesTo:[...dims], dataType, summary, timePeriods, versions });
+    }
+    desc = `Add new Module "${module}" with ${count} line item(s) (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
+  }
+
+  return { lists, lineItems, desc };
+}
+
+/* ===================== STEP 4: RESULTS ===================== */
+function predictImpact(){
+  const statusEl = document.getElementById('changeStatus');
+  if(Object.keys(LISTS).length === 0 && LINE_ITEMS.length === 0){
+    statusEl.className = 'status-line err';
+    statusEl.textContent = 'Parse your base Lists and Line Items first (Step 1).';
+    return;
+  }
+  const outcome = applyChange();
+  if(outcome.error){
+    statusEl.className = 'status-line err';
+    statusEl.textContent = outcome.error;
+    return;
+  }
+  statusEl.className = 'status-line ok';
+  statusEl.textContent = outcome.desc;
+
+  const current = window._currentResult || computeWorkspace(LISTS, LINE_ITEMS);
+  const projected = computeWorkspace(outcome.lists, outcome.lineItems);
+
+  const deltaCells = projected.totalCells - current.totalCells;
+  const deltaMb = projected.totalMb - current.totalMb;
+  const pct = current.totalCells ? (deltaCells/current.totalCells*100) : (projected.totalCells?100:0);
+
+  const pctEl = document.getElementById('impactPct');
+  pctEl.textContent = (pct>=0?'+':'') + pct.toFixed(1) + '%';
+  pctEl.className = 'pct ' + (pct > 25 ? 'risk' : pct > 8 ? 'mild' : 'low');
+
+  document.getElementById('impactNarrative').innerHTML =
+    `<b>${outcome.desc}.</b><br>Workspace grows from <b>${fmt(current.totalCells)}</b> to <b>${fmt(projected.totalCells)}</b> cells
+     (≈ ${fmtMb(current.totalMb)} → ${fmtMb(projected.totalMb)}), a change of <b>${fmt(deltaCells)} cells</b>.`;
+
+  document.getElementById('cCells').textContent = fmt(current.totalCells);
+  document.getElementById('cMb').textContent = fmtMb(current.totalMb);
+  document.getElementById('cMods').textContent = Object.keys(current.modules).length;
+
+  document.getElementById('pCells').textContent = fmt(projected.totalCells);
+  document.getElementById('pMb').textContent = fmtMb(projected.totalMb);
+  document.getElementById('pMods').textContent = Object.keys(projected.modules).length;
+
+  document.getElementById('dCells').textContent = (deltaCells>=0?'+':'') + fmt(deltaCells);
+  document.getElementById('dMb').textContent = (deltaMb>=0?'+':'') + fmtMb(deltaMb);
+  document.getElementById('dPct').textContent = (pct>=0?'+':'') + pct.toFixed(2) + '%';
+
+  renderBarChart(current, projected);
+  renderResultTable(current, projected);
+  renderCellGrid(Object.keys(outcome.lists).length, outcome.lineItems.length, Math.min(0.6, Math.max(0.05, pct/100)));
+
+  document.getElementById('step4').classList.remove('hidden');
+  if (typeof document.getElementById('step4').scrollIntoView === 'function') {
+    document.getElementById('step4').scrollIntoView({behavior:'smooth', block:'start'});
+  }
+}
+
+function renderBarChart(current, projected){
+  const allMods = [...new Set([...Object.keys(current.modules), ...Object.keys(projected.modules)])]
+    .sort((a,b)=> (projected.modules[b]?.cells||0) - (projected.modules[a]?.cells||0));
+  const maxCells = Math.max(1, ...allMods.map(m=>Math.max(current.modules[m]?.cells||0, projected.modules[m]?.cells||0)));
+
+  const el = document.getElementById('barChart');
+  el.innerHTML = allMods.map(m=>{
+    const c = current.modules[m]?.cells || 0;
+    const p = projected.modules[m]?.cells || 0;
+    const cw = (c/maxCells*100).toFixed(1), pw = (p/maxCells*100).toFixed(1);
+    return `
+      <div class="bar-row"><span>${m}</span><div class="bar-track"><div class="bar-fill current" style="width:${cw}%"></div></div><span class="mono">${fmt(c)}</span></div>
+      <div class="bar-row"><span></span><div class="bar-track"><div class="bar-fill projected" style="width:${pw}%"></div></div><span class="mono">${fmt(p)}</span></div>
+    `;
+  }).join('<div style="height:8px"></div>');
+}
+
+function renderResultTable(current, projected){
+  const allMods = [...new Set([...Object.keys(current.modules), ...Object.keys(projected.modules)])].sort();
+  const tbody = document.querySelector('#resultTable tbody');
+  tbody.innerHTML = '';
+  allMods.forEach(m=>{
+    const c = current.modules[m], p = projected.modules[m];
+    const cCells = c?c.cells:0, pCells = p?p.cells:0;
+    const modPct = cCells ? ((pCells-cCells)/cCells*100) : (pCells?100:0);
+    let tag = '<span class="tag flat">Unchanged</span>';
+    if(!c && p) tag = '<span class="tag new">New module</span>';
+    else if(Math.abs(modPct) > 0.01) tag = '<span class="tag grown">Changed</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${m}</td><td class="num">${fmt(cCells)}</td><td class="num">${fmt(pCells)}</td><td class="num">${modPct>=0?'+':''}${modPct.toFixed(1)}%</td><td>${tag}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+/* init empty grid on load */
+renderCellGrid(0,0,0);
+</script>
+</body>
+</html>
