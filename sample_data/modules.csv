@@ -1,0 +1,8 @@
+Module,Line Item,Applies To,Data Type,Summary Method,Time Periods,Versions
+Opex Planning,Budget Amount,Cost Center;Region,Number,Sum,12,3
+Opex Planning,Actuals Amount,Cost Center;Region,Number,Sum,12,3
+Opex Planning,Variance %,Cost Center;Region,Number,Formula,12,3
+Revenue Planning,Forecast Units,Product;Region,Number,Sum,12,3
+Revenue Planning,Forecast Price,Product;Region,Number,Average,12,3
+Workforce Planning,Headcount,Employee;Cost Center,Number,Sum,12,1
+Workforce Planning,FTE Ratio,Employee;Cost Center,Number,Ratio,12,1

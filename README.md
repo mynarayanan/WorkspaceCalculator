@@ -1,64 +1,41 @@
-# Anaplan Workspace Capacity Forecaster — Railway deployment package
+# Anaplan Workspace Capacity Forecaster — Vercel package
 
-This app is fully client-side (all parsing/calculation runs in the browser's
-JavaScript). `server.js` is a ~40-line, zero-dependency Node server that just
-serves `public/index.html` — that's all Railway needs to host it.
+A fully client-side static app: all parsing and cell-count math runs in the
+browser. Vercel just serves `public/index.html` (no build step, no server).
 
-## Folder structure
+## Structure
 ```
-.
-├── public/
-│   └── index.html      <- the app itself
-├── server.js            <- static file server (no npm deps required)
-├── package.json          <- tells Railway how to run it (Nixpacks auto-detects Node)
-├── railway.json           <- explicit build/start config (optional but recommended)
-└── Procfile                <- fallback start command (optional)
+public/index.html                 <- the app (Vercel output directory)
+vercel.json                       <- static config (no build, outputDirectory=public)
+package.json                      <- minimal metadata
+anaplan_workspace_forecaster.py   <- standalone reference/CLI version (not deployed)
+sample_data/                      <- lists.csv and modules.csv to test the Upload CSV buttons
 ```
 
-## Option A — Deploy from GitHub (recommended)
-1. Create a new GitHub repo and push this folder to it:
-   ```bash
-   git init
-   git add .
-   git commit -m "Anaplan workspace forecaster"
-   git branch -M main
-   git remote add origin https://github.com/<you>/anaplan-forecaster.git
-   git push -u origin main
-   ```
-2. Go to https://railway.app → **New Project** → **Deploy from GitHub repo** → pick the repo.
-3. Railway auto-detects Node via Nixpacks, runs `npm install` (no-op, zero deps) then `npm start`.
-4. Once it deploys, click **Settings → Networking → Generate Domain** to get a public URL.
-
-## Option B — Deploy with the Railway CLI (no GitHub needed)
-1. Install the CLI: `npm install -g @railway/cli`
-2. From inside this folder:
-   ```bash
-   railway login
-   railway init
-   railway up
-   ```
-3. Then generate a public domain:
-   ```bash
-   railway domain
-   ```
-
-## Verifying locally before you deploy
+## Deploy option A: Vercel CLI (fastest)
 ```bash
-npm start
-# or: node server.js
+npm i -g vercel
+cd vercel_package
+vercel login
+vercel            # preview deployment
+vercel --prod     # production deployment
 ```
-Then open http://localhost:3000 (Railway sets `PORT` automatically in production;
-locally it defaults to 3000).
+When prompted: "Link to existing project?" -> No; accept defaults
+(no framework, output directory `public` is read from vercel.json).
+
+## Deploy option B: GitHub + Vercel dashboard
+1. Push this folder to a GitHub repo.
+2. vercel.com -> Add New -> Project -> Import the repo.
+3. Framework Preset: **Other**. Leave Build Command and Install Command empty.
+   Output Directory: `public`. Click Deploy.
+
+## Local preview
+```bash
+npx serve public
+```
 
 ## Notes
-- No environment variables are required — the app has no backend calls, no
-  database, and stores nothing server-side. Everything (paste parsing, the
-  cell-count math, the projected-vs-current comparison) runs in the visitor's
-  browser.
-- The Python script (`anaplan_workspace_forecaster.py`, not included in this
-  bundle) mirrors the same calculation logic for offline/CLI use, but the
-  deployed web app does **not** call it — the two are kept in sync manually
-  as reference implementations of the same model. If you'd rather have the
-  browser call a real Python backend instead of duplicating the logic in JS,
-  say the word and I can wrap it in a small Flask/FastAPI service and adjust
-  this package to run both processes on Railway.
+- No environment variables needed.
+- The Python file is not executed on Vercel; it mirrors the same model for
+  offline/CLI use. To expose it as an API, it can be wrapped as a Vercel
+  Python serverless function under `api/`.

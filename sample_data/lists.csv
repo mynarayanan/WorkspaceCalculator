@@ -1,0 +1,7 @@
+Name,Top Level,Parent Hierarchy,Selective Access,Production Data,Managed By,Has Workflow,Properties,Subsets,Numbered,Display Name Property,Is Organization,Category,Data Tags,Item Count,Notes,Referenced in Applies To,Referenced as Format,Referenced in Formula,Next item index,Use Top Level As Default Page,Delegated
+Users,,,,TRUE,,FALSE,,,FALSE,,FALSE,,,30,,,,,606,FALSE,FALSE
+For Heat Map - I,,,FALSE,FALSE,,FALSE,,,FALSE,,FALSE,,,5,,,'Map Chart -US'.'Heat Map - I',,6,FALSE,FALSE
+Cost Center,,,,,,,,,,,,,,180,,,,,181,,
+Product,,,,,,,,,,,,,,1200,,,,,1201,,
+Employee,,,,,,,,,,,,,,950,,,,,951,,
+Region,,Region Group,,,,,,,,,,,,12,,,,,13,,

@@ -1,13 +1,6 @@
 {
   "name": "anaplan-workspace-forecaster",
   "version": "1.0.0",
-  "description": "Anaplan Workspace Capacity Forecaster - static webpage served via a minimal Node server",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "license": "MIT"
+  "private": true,
+  "description": "Anaplan Workspace Capacity Forecaster - static site for Vercel"
 }
