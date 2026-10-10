@@ -327,7 +327,7 @@ For Heat Map - I			FALSE	FALSE		FALSE			FALSE		FALSE			5			'Map Chart -US'.'Heat
 
       <div class="card">
         <h3>Modules &amp; line items <span class="format-tag">Module, Line Item, Applies To, Data Type, Summary, Time Periods, Versions</span></h3>
-        <p class="hint">Include a header row: columns are matched by name (Module, Line Item, Applies To, Format, Summary, Time Scale, Version). "Applies To" lists may be separated by <b>;</b> or <b>,</b>. Without a header, this positional order is assumed.</p>
+        <p class="hint">Upload the Anaplan <b>Modules with Line Items</b> export as-is (its Cell Count column is used), or a simple table: columns are matched by name (Module, Line Item, Applies To, Format, Summary, Time Scale, Version). "Applies To" lists may be separated by <b>;</b> or <b>,</b>. Without a header, this positional order is assumed.</p>
         <textarea id="lineItemsInput" placeholder="Opex Planning, Budget Amount, Cost Center;Region, Number, Sum, 12, 3
 Revenue Planning, Forecast Units, Product;Region, Number, Sum, 12, 3
 Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></textarea>
@@ -459,7 +459,8 @@ let LINE_ITEMS = [];  // [{module, name, appliesTo[], dataType, summary, timePer
 
 const SUMMARY_OVERHEAD = {
   'none':0.0,'sum':0.10,'average':0.10,'min':0.10,'max':0.10,
-  'weighted average':0.15,'ratio':0.15,'formula':0.20
+  'weighted average':0.15,'ratio':0.15,'formula':0.20,
+  'any':0.05,'all':0.05,'last non blank':0.05,'first non blank':0.05
 };
 const BYTES_PER_CELL = {
   'number':8,'boolean':1,'text':16,'list':4,'time':4,'currency':8,'none':4
@@ -568,10 +569,11 @@ const LIST_BOOL_COLS = new Set(['selectiveAccess','productionData','hasWorkflow'
 
 function parseLists(text){
   const out = {};
-  text.trim().split('\n').forEach(line=>{
+  text.replace(/\r/g,'').split('\n').forEach(line=>{
     if(!line.trim()) return;
-    const cols = splitRow(line);
-    if(cols[0].toLowerCase() === 'name') return; // header row
+    const cols = line.split('\t').length > 1 ? line.split('\t').map(x=>x.trim()) : splitRow(line);
+    if(cols[0].toLowerCase() === 'name') return;                 // header row
+    if(cols[1] && cols[1].toLowerCase() === 'top level') return; // header row with blank first cell
     if(!cols[0]) return;
 
     const rec = { name: cols[0] };
@@ -602,12 +604,17 @@ const LI_ALIASES = {
   versions:   ['versions','version']
 };
 const NOT_APPLICABLE = new Set(['','-','none','notapplicable','n/a','na']);
+let MODULES_META = {};   // module -> {dims:[], cellCount}   (from export-format module rows)
+let ORIG_LISTS = {};     // snapshot of lists as parsed, used to scale observed cell counts
 
+function jsonField(raw, key){
+  try{ const o = JSON.parse(raw); return o ? o[key] : undefined; }catch(e){ return undefined; }
+}
 function timeToPeriods(raw){
   const v = (raw||'').trim();
   if(/^\d+$/.test(v)) return parseInt(v,10);
   const k = v.toLowerCase();
-  if(NOT_APPLICABLE.has(k.replace(/\s/g,'')) ) return 0;
+  if(NOT_APPLICABLE.has(k.replace(/\s/g,''))) return 0;
   if(k.startsWith('month')) return 12;
   if(k.startsWith('quarter')) return 4;
   if(k.startsWith('week')) return 52;
@@ -619,11 +626,16 @@ function versionsToCount(raw){
   const v = (raw||'').trim();
   if(/^\d+$/.test(v)) return Math.max(1, parseInt(v,10));
   if(NOT_APPLICABLE.has(v.toLowerCase().replace(/\s/g,''))) return 1;
-  const l = LISTS[v];                 // version dimension given as a list name
+  const l = LISTS[v];
   return l && l.count > 0 ? l.count : 1;
 }
 function normalizeDataType(raw){
-  const k = (raw||'Number').trim().toLowerCase();
+  let k = (raw||'Number').trim();
+  if(k.startsWith('{')){
+    const dt = String(jsonField(k,'dataType') || 'NUMBER').toUpperCase();
+    return ({NUMBER:'Number',ENTITY:'List',BOOLEAN:'Boolean',TEXT:'Text',DATE:'Time',TIME_ENTITY:'Time',NONE:'None'})[dt] || 'Number';
+  }
+  k = k.toLowerCase();
   if(k.startsWith('list')) return 'List';
   if(k.startsWith('bool')) return 'Boolean';
   if(k.startsWith('text')) return 'Text';
@@ -631,14 +643,77 @@ function normalizeDataType(raw){
   if(k.includes('currency')) return 'Currency';
   return 'Number';
 }
+function normalizeSummary(raw){
+  const k = (raw||'None').trim();
+  if(k.startsWith('{')) return String(jsonField(k,'summaryMethod') || 'NONE').toLowerCase().replace(/_/g,' ');
+  return k;
+}
+
+// Split "Country, Employee Role" into dimension names. Greedy-matches known list names so
+// that a list whose own name contains a comma is not broken apart.
+function splitDims(str){
+  const t = (str||'').trim();
+  if(NOT_APPLICABLE.has(t.toLowerCase().replace(/\s/g,''))) return [];
+  if(!/[;,|]/.test(t)) return [t];
+  const pieces = t.split(/;|\|/).flatMap(seg=>{
+    const parts = seg.split(','); const out = []; let i = 0;
+    while(i < parts.length){
+      let matched = false;
+      for(let j = parts.length; j > i; j--){
+        const cand = parts.slice(i,j).join(',').trim();
+        if(LISTS[cand]){ out.push(cand); i = j; matched = true; break; }
+      }
+      if(!matched){ out.push(parts[i].trim()); i++; }
+    }
+    return out;
+  });
+  return pieces.filter(x=>!NOT_APPLICABLE.has(x.toLowerCase().replace(/\s/g,'')));
+}
 
 function parseLineItems(text){
   const out = [];
+  MODULES_META = {};
   const rows = text.trim().split('\n').filter(l=>l.trim()).map(splitRow);
   if(!rows.length) return out;
-
-  // Header-driven mapping when a header row is present, else legacy positional order
   const headerNorm = rows[0].map(norm);
+
+  /* ---- Format A: Anaplan "Modules with Line Items" export ----
+     Module rows have an empty "Module Name"; line-item rows carry their module in it.
+     Cell Count is the observed cell count for that module / line item. */
+  if(headerNorm.includes('moduleswithlineitems') && headerNorm.includes('modulename')){
+    const ix = k => headerNorm.indexOf(k);
+    const c = { name:ix('moduleswithlineitems'), format:ix('format'), summary:ix('summary'),
+      applies:ix('appliesto'), timeScale:ix('timescale'), versions:ix('versions'),
+      cells:ix('cellcount'), module:ix('modulename') };
+    const val = (cols,i) => i >= 0 && cols[i] !== undefined ? cols[i].trim() : '';
+    const num = v => { const n = parseFloat(String(v).replace(/,/g,'')); return isNaN(n) ? null : n; };
+    const body = rows.slice(1);
+
+    body.forEach(cols=>{                       // pass 1: modules
+      if(val(cols,c.module) === '' && val(cols,c.name) !== ''){
+        MODULES_META[val(cols,c.name)] = { dims: splitDims(val(cols,c.applies)), cellCount: num(val(cols,c.cells)) };
+      }
+    });
+    body.forEach(cols=>{                       // pass 2: line items
+      const module = val(cols,c.module), name = val(cols,c.name);
+      if(!module || !name) return;
+      const own = splitDims(val(cols,c.applies));
+      const meta = MODULES_META[module];
+      const dims = own.length ? own : (meta ? meta.dims.slice() : []);
+      out.push({
+        module, name, appliesTo: dims, origDims: dims.slice(),
+        dataType: normalizeDataType(val(cols,c.format)),
+        summary: normalizeSummary(val(cols,c.summary)),
+        timePeriods: timeToPeriods(val(cols,c.timeScale)),
+        versions: versionsToCount(val(cols,c.versions)),
+        cellCount: num(val(cols,c.cells))
+      });
+    });
+    out._source = 'export';
+    return out;
+  }
+
+  /* ---- Format B: simple table, columns matched by header name ---- */
   const hasHeader = headerNorm.includes('module') || headerNorm.includes('modulename');
   const idx = {};
   if(hasHeader){
@@ -646,7 +721,7 @@ function parseLineItems(text){
       const i = headerNorm.findIndex(h=>aliases.includes(h));
       if(i >= 0) idx[key] = i;
     });
-  } else {
+  } else {   // Format C: legacy positional order
     ['module','name','appliesTo','dataType','summary','timeScale','versions'].forEach((k,i)=>idx[k]=i);
   }
   const get = (cols,key) => idx[key] !== undefined && cols[idx[key]] !== undefined ? cols[idx[key]] : '';
@@ -654,38 +729,60 @@ function parseLineItems(text){
   rows.slice(hasHeader ? 1 : 0).forEach(cols=>{
     const module = get(cols,'module'), name = get(cols,'name');
     if(!module || !name) return;
-    const appliesTo = get(cols,'appliesTo').split(/[;,|]/).map(x=>x.trim())
-      .filter(x=>!NOT_APPLICABLE.has(x.toLowerCase().replace(/\s/g,'')));
+    const dims = splitDims(get(cols,'appliesTo'));
     out.push({
-      module, name, appliesTo,
+      module, name, appliesTo: dims, origDims: dims.slice(),
       dataType: normalizeDataType(get(cols,'dataType')),
-      summary: get(cols,'summary') || 'None',
+      summary: normalizeSummary(get(cols,'summary') || 'None'),
       timePeriods: timeToPeriods(get(cols,'timeScale')),
-      versions: versionsToCount(get(cols,'versions'))
+      versions: versionsToCount(get(cols,'versions')),
+      cellCount: null
     });
   });
-  out._mapping = idx; out._hasHeader = hasHeader;
+  out._mapping = idx; out._hasHeader = hasHeader; out._source = 'table';
   return out;
 }
 
 /* ===================== CORE CALCULATION ===================== */
+// Modelled cell count (used for brand-new line items, or exports without a Cell Count column)
+function modelCells(li, lists){
+  let dimSize = 1;
+  li.appliesTo.forEach(ln=>{ const l = lists[ln]; dimSize *= l ? l.count : 1; });
+  const timeFactor = li.timePeriods > 0 ? li.timePeriods : 1;
+  const versionFactor = li.versions > 0 ? li.versions : 1;
+  const overhead = SUMMARY_OVERHEAD[(li.summary||'none').toLowerCase()] ?? 0;
+  return dimSize * timeFactor * versionFactor * (1 + overhead);
+}
+
+// Observed cell counts are scaled by how much each dimension has changed since the upload:
+// a grown list multiplies by new/old size, a newly added dimension multiplies by its size.
+function lineItemCells(li, lists){
+  if(li.cellCount === null || li.cellCount === undefined) return modelCells(li, lists);
+  let factor = 1;
+  li.appliesTo.forEach(d=>{
+    const cur = lists[d];
+    if(!cur) return;                                   // subset / system list: cannot scale
+    if((li.origDims || []).includes(d)){
+      const orig = ORIG_LISTS[d];
+      factor *= (orig && orig.count > 0) ? cur.count / orig.count : 1;
+    } else {
+      factor *= cur.count;
+    }
+  });
+  return li.cellCount * factor;
+}
+
 function computeWorkspace(lists, lineItems){
   const modules = {}; // module -> {cells, sizeMb, lineItems}
   let totalCells = 0, totalMb = 0;
   const liResults = [];
 
   lineItems.forEach(li=>{
-    let dimSize = 1;
-    li.appliesTo.forEach(ln=>{ const l = lists[ln]; dimSize *= l ? l.count : 1; });
-    const timeFactor = li.timePeriods > 0 ? li.timePeriods : 1;
-    const versionFactor = li.versions > 0 ? li.versions : 1;
-    const baseCells = dimSize * timeFactor * versionFactor;
-    const overhead = SUMMARY_OVERHEAD[(li.summary||'none').toLowerCase()] ?? 0;
-    const cells = baseCells * (1 + overhead);
+    const cells = lineItemCells(li, lists);
     const bpc = BYTES_PER_CELL[(li.dataType||'none').toLowerCase()] ?? 4;
     const sizeMb = (cells * bpc) / 1e6;
 
-    liResults.push({ module: li.module, name: li.name, dimSize, cells, sizeMb });
+    liResults.push({ module: li.module, name: li.name, cells, sizeMb });
     totalCells += cells; totalMb += sizeMb;
 
     if(!modules[li.module]) modules[li.module] = { cells:0, sizeMb:0, lineItems:0 };
@@ -704,11 +801,12 @@ function parseAll(){
   const statusEl = document.getElementById('parseStatus');
 
   LISTS = parseLists(listsText);
+  ORIG_LISTS = JSON.parse(JSON.stringify(LISTS));
   LINE_ITEMS = parseLineItems(liText);
 
   const listCount = Object.keys(LISTS).length;
   const liCount = LINE_ITEMS.length;
-  const moduleSet = new Set(LINE_ITEMS.map(li=>li.module));
+  const moduleSet = new Set([...Object.keys(MODULES_META), ...LINE_ITEMS.map(li=>li.module)]);
 
   document.getElementById('heroLists').textContent = listCount;
   document.getElementById('heroItems').textContent = liCount;
@@ -727,14 +825,19 @@ function parseAll(){
   let unresolved = [];
   LINE_ITEMS.forEach(li=> li.appliesTo.forEach(ln=>{ if(!LISTS[ln] && !unresolved.includes(ln)) unresolved.push(ln); }));
 
-  statusEl.className = unresolved.length ? 'status-line err' : 'status-line ok';
+  const isExport = LINE_ITEMS._source === 'export';
   const shown = unresolved.slice(0,6).map(n=>n.length>40 ? n.slice(0,40)+'…' : n).join(', ');
-  const mapped = LINE_ITEMS._hasHeader
-    ? 'Columns matched by header: ' + Object.keys(LINE_ITEMS._mapping).join(', ') + '. '
-    : '';
-  statusEl.textContent = unresolved.length
-    ? `Parsed ${listCount} lists, ${liCount} line items. ${mapped}Warning: ${unresolved.length} "Applies To" value(s) don't match any list name (e.g. ${shown}${unresolved.length>6 ? ', …' : ''}) and are treated as size 1. Check that the file's columns are Module, Line Item, Applies To, Format, Summary, Time Scale, Version.`
-    : `Parsed ${listCount} lists and ${liCount} line items across ${moduleSet.size} modules. ${mapped}`;
+  const moreTxt = unresolved.length>6 ? ', …' : '';
+  let msg = `Parsed ${listCount} lists, ${liCount} line items across ${moduleSet.size} modules.`;
+  if(isExport) msg += ' Line-item export detected: observed Cell Count values are used for the current workspace.';
+  else if(LINE_ITEMS._hasHeader) msg += ' Columns matched by header: ' + Object.keys(LINE_ITEMS._mapping).join(', ') + '.';
+  if(unresolved.length){
+    msg += isExport
+      ? ` Note: ${unresolved.length} dimension name(s) used in Applies To are not in the Lists file (typically subsets or system lists), e.g. ${shown}${moreTxt}. Their cell counts are kept as-is and will not scale if the parent list changes.`
+      : ` Warning: ${unresolved.length} "Applies To" value(s) don't match any list name (e.g. ${shown}${moreTxt}) and are treated as size 1.`;
+  }
+  statusEl.className = unresolved.length && !isExport ? 'status-line err' : 'status-line ok';
+  statusEl.textContent = msg;
 
   renderCurrentSnapshot();
   populateChangeFormOptions();
@@ -790,7 +893,7 @@ function renderCurrentSnapshot(){
 /* ===================== STEP 3: CHANGE FORM ===================== */
 function populateChangeFormOptions(){ renderChangeForm(); }
 
-function moduleOptions(){ return [...new Set(LINE_ITEMS.map(li=>li.module))]; }
+function moduleOptions(){ return [...new Set([...Object.keys(MODULES_META), ...LINE_ITEMS.map(li=>li.module)])].sort(); }
 function listOptions(){ return Object.keys(LISTS); }
 
 function chipRow(id, options){
@@ -908,7 +1011,7 @@ function applyChange(){
     const timePeriods = parseInt(document.getElementById('f_liTime').value,10) || 0;
     if(!module || !count) return { error: 'Choose a module and number of new line items.' };
     for(let i=1;i<=count;i++){
-      lineItems.push({ module, name:`New Line Item ${i}`, appliesTo:[...dims], dataType, summary, timePeriods, versions });
+      lineItems.push({ module, name:`New Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods, versions, cellCount:null });
     }
     desc = `Add ${count} ${dataType} line item(s) to module "${module}" (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
   }
@@ -922,7 +1025,7 @@ function applyChange(){
     const timePeriods = parseInt(document.getElementById('f_modTime').value,10) || 0;
     if(!module || !count) return { error: 'Enter a new module name and number of line items.' };
     for(let i=1;i<=count;i++){
-      lineItems.push({ module, name:`${module} Line Item ${i}`, appliesTo:[...dims], dataType, summary, timePeriods, versions });
+      lineItems.push({ module, name:`${module} Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods, versions, cellCount:null });
     }
     desc = `Add new Module "${module}" with ${count} line item(s) (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
   }
