@@ -186,7 +186,7 @@
   button.big{padding:13px 26px;font-size:14.5px;}
   button:disabled{opacity:.4;cursor:not-allowed;}
 
-  .status-line{font-size:12.5px;color:var(--muted);margin-top:10px;min-height:16px;font-family:'IBM Plex Mono',monospace;}
+  .status-line{word-break:break-word;font-size:12.5px;color:var(--muted);margin-top:10px;min-height:16px;font-family:'IBM Plex Mono',monospace;}
   .status-line.err{color:var(--risk);}
   .status-line.ok{color:var(--current);}
 
@@ -327,7 +327,7 @@ For Heat Map - I			FALSE	FALSE		FALSE			FALSE		FALSE			5			'Map Chart -US'.'Heat
 
       <div class="card">
         <h3>Modules &amp; line items <span class="format-tag">Module, Line Item, Applies To, Data Type, Summary, Time Periods, Versions</span></h3>
-        <p class="hint">"Applies To" = list names separated by <b>;</b> (dimensions), or "-" for none.</p>
+        <p class="hint">Include a header row: columns are matched by name (Module, Line Item, Applies To, Format, Summary, Time Scale, Version). "Applies To" lists may be separated by <b>;</b> or <b>,</b>. Without a header, this positional order is assumed.</p>
         <textarea id="lineItemsInput" placeholder="Opex Planning, Budget Amount, Cost Center;Region, Number, Sum, 12, 3
 Revenue Planning, Forecast Units, Product;Region, Number, Sum, 12, 3
 Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></textarea>
@@ -591,23 +591,80 @@ function parseLists(text){
   return out;
 }
 
+const norm = h => (h||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const LI_ALIASES = {
+  module:     ['module','modulename'],
+  name:       ['lineitem','lineitemname','name'],
+  appliesTo:  ['appliesto','dimensions','dimension','lists'],
+  dataType:   ['format','datatype','type'],
+  summary:    ['summary','summarymethod'],
+  timeScale:  ['timeperiods','timescale','time'],
+  versions:   ['versions','version']
+};
+const NOT_APPLICABLE = new Set(['','-','none','notapplicable','n/a','na']);
+
+function timeToPeriods(raw){
+  const v = (raw||'').trim();
+  if(/^\d+$/.test(v)) return parseInt(v,10);
+  const k = v.toLowerCase();
+  if(NOT_APPLICABLE.has(k.replace(/\s/g,'')) ) return 0;
+  if(k.startsWith('month')) return 12;
+  if(k.startsWith('quarter')) return 4;
+  if(k.startsWith('week')) return 52;
+  if(k.startsWith('day')) return 365;
+  if(k.startsWith('year')) return 1;
+  return 0;
+}
+function versionsToCount(raw){
+  const v = (raw||'').trim();
+  if(/^\d+$/.test(v)) return Math.max(1, parseInt(v,10));
+  if(NOT_APPLICABLE.has(v.toLowerCase().replace(/\s/g,''))) return 1;
+  const l = LISTS[v];                 // version dimension given as a list name
+  return l && l.count > 0 ? l.count : 1;
+}
+function normalizeDataType(raw){
+  const k = (raw||'Number').trim().toLowerCase();
+  if(k.startsWith('list')) return 'List';
+  if(k.startsWith('bool')) return 'Boolean';
+  if(k.startsWith('text')) return 'Text';
+  if(k.startsWith('date') || k.startsWith('time')) return 'Time';
+  if(k.includes('currency')) return 'Currency';
+  return 'Number';
+}
+
 function parseLineItems(text){
   const out = [];
-  text.trim().split('\n').forEach(line=>{
-    if(!line.trim()) return;
-    const cols = splitRow(line);
-    if(['module','module name'].includes(cols[0].toLowerCase())) return;
-    if(cols.length < 2) return;
-    const module = cols[0], name = cols[1];
-    const appliesRaw = cols[2] || '-';
-    const appliesTo = ['-','',undefined,'None'].includes(appliesRaw) ? [] :
-      appliesRaw.split(';').map(s=>s.trim()).filter(Boolean);
-    const dataType = cols[3] || 'Number';
-    const summary = cols[4] || 'None';
-    const timePeriods = parseInt(cols[5],10) || 0;
-    const versions = parseInt(cols[6],10) || 1;
-    out.push({ module, name, appliesTo, dataType, summary, timePeriods, versions });
+  const rows = text.trim().split('\n').filter(l=>l.trim()).map(splitRow);
+  if(!rows.length) return out;
+
+  // Header-driven mapping when a header row is present, else legacy positional order
+  const headerNorm = rows[0].map(norm);
+  const hasHeader = headerNorm.includes('module') || headerNorm.includes('modulename');
+  const idx = {};
+  if(hasHeader){
+    Object.entries(LI_ALIASES).forEach(([key, aliases])=>{
+      const i = headerNorm.findIndex(h=>aliases.includes(h));
+      if(i >= 0) idx[key] = i;
+    });
+  } else {
+    ['module','name','appliesTo','dataType','summary','timeScale','versions'].forEach((k,i)=>idx[k]=i);
+  }
+  const get = (cols,key) => idx[key] !== undefined && cols[idx[key]] !== undefined ? cols[idx[key]] : '';
+
+  rows.slice(hasHeader ? 1 : 0).forEach(cols=>{
+    const module = get(cols,'module'), name = get(cols,'name');
+    if(!module || !name) return;
+    const appliesTo = get(cols,'appliesTo').split(/[;,|]/).map(x=>x.trim())
+      .filter(x=>!NOT_APPLICABLE.has(x.toLowerCase().replace(/\s/g,'')));
+    out.push({
+      module, name, appliesTo,
+      dataType: normalizeDataType(get(cols,'dataType')),
+      summary: get(cols,'summary') || 'None',
+      timePeriods: timeToPeriods(get(cols,'timeScale')),
+      versions: versionsToCount(get(cols,'versions'))
+    });
   });
+  out._mapping = idx; out._hasHeader = hasHeader;
   return out;
 }
 
@@ -671,9 +728,13 @@ function parseAll(){
   LINE_ITEMS.forEach(li=> li.appliesTo.forEach(ln=>{ if(!LISTS[ln] && !unresolved.includes(ln)) unresolved.push(ln); }));
 
   statusEl.className = unresolved.length ? 'status-line err' : 'status-line ok';
+  const shown = unresolved.slice(0,6).map(n=>n.length>40 ? n.slice(0,40)+'…' : n).join(', ');
+  const mapped = LINE_ITEMS._hasHeader
+    ? 'Columns matched by header: ' + Object.keys(LINE_ITEMS._mapping).join(', ') + '. '
+    : '';
   statusEl.textContent = unresolved.length
-    ? `Parsed ${listCount} lists, ${liCount} line items. Warning: line items reference unknown list(s): ${unresolved.join(', ')} — treated as size 1.`
-    : `Parsed ${listCount} lists and ${liCount} line items across ${moduleSet.size} modules.`;
+    ? `Parsed ${listCount} lists, ${liCount} line items. ${mapped}Warning: ${unresolved.length} "Applies To" value(s) don't match any list name (e.g. ${shown}${unresolved.length>6 ? ', …' : ''}) and are treated as size 1. Check that the file's columns are Module, Line Item, Applies To, Format, Summary, Time Scale, Version.`
+    : `Parsed ${listCount} lists and ${liCount} line items across ${moduleSet.size} modules. ${mapped}`;
 
   renderCurrentSnapshot();
   populateChangeFormOptions();
