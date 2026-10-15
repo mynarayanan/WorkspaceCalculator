@@ -348,6 +348,16 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
     <div class="step-head"><span class="step-no">02</span><h2>Current workspace snapshot</h2></div>
     <p class="step-desc">This is what your parsed Lists and Line Items add up to today, before any change.</p>
 
+    <div class="card" style="margin-bottom:22px;">
+      <h3>Calibrate to Anaplan <span class="format-tag">optional</span></h3>
+      <p class="hint">Anaplan's reported workspace size includes storage overhead this model can't see (list items, indexes, formulas, data types). Enter the totals shown in Anaplan for this model and every MB figure is scaled to match; projections then scale from that baseline.</p>
+      <div class="field-grid">
+        <div class="field"><label>Anaplan reported total cells</label><input type="number" id="calCells" min="0" placeholder="e.g. 1027421" oninput="renderCurrentSnapshot()"></div>
+        <div class="field"><label>Anaplan reported model size (MB)</label><input type="number" id="calMb" min="0" step="0.01" placeholder="e.g. 15.1" oninput="renderCurrentSnapshot()"></div>
+      </div>
+      <div class="status-line" id="calNote"></div>
+    </div>
+
     <div class="snapshot-grid">
       <div class="metric"><div class="m-lbl">Total cells</div><div class="m-val mono" id="curTotalCells">—</div></div>
       <div class="metric"><div class="m-lbl">Est. size (MB)</div><div class="m-val mono" id="curTotalMb">—</div></div>
@@ -387,6 +397,12 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
           <option value="add_line_items">Add new Line Item(s) to an existing Module</option>
           <option value="add_module">Add a brand-new Module</option>
         </select>
+      </div>
+
+      <div class="field">
+        <label>Calendar years in the model (drives time periods)</label>
+        <input type="number" id="calYears" value="3" min="1" style="max-width:160px">
+        <div class="hint" style="margin:6px 0 0;">Month = 12 × years. <b>No summary</b> on a line item counts leaf list members and leaf time periods only (e.g. 36 × 41 × 53). <b>Any summary</b> counts all list members including parents plus one total period per year (e.g. 39 × 58 × 59).</div>
       </div>
 
       <div id="changeFormArea"></div>
@@ -444,10 +460,7 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
   </section>
 
   <div class="disclaimer">
-    <b>Model note:</b> Anaplan does not publish its internal workspace-sizing formula. This tool approximates cell volume as
-    <span class="mono">(list dimension sizes) × (time periods) × (versions) × (1 + summary overhead)</span>, then applies a per-data-type byte weight for an
-    indicative MB figure. Use this for directional "before vs after" planning — validate final numbers against Anaplan's own workspace usage screen before making capacity or licensing decisions.
-  </div>
+    <b>Model note:</b> cells = time periods × list members × versions. Without a summary only leaf members count; with any summary all members (parents included) and time summary periods count. Existing cell counts come from your export and are scaled when lists change; MB is indicative unless calibrated to Anaplan's reported size.</div>
 
   <footer>Cellcast — Anaplan Workspace Capacity Forecaster</footer>
 </div>
@@ -457,11 +470,6 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
 let LISTS = {};       // name -> {name, count, hierarchy}
 let LINE_ITEMS = [];  // [{module, name, appliesTo[], dataType, summary, timePeriods, versions}]
 
-const SUMMARY_OVERHEAD = {
-  'none':0.0,'sum':0.10,'average':0.10,'min':0.10,'max':0.10,
-  'weighted average':0.15,'ratio':0.15,'formula':0.20,
-  'any':0.05,'all':0.05,'last non blank':0.05,'first non blank':0.05
-};
 const BYTES_PER_CELL = {
   'number':8,'boolean':1,'text':16,'list':4,'time':4,'currency':8,'none':4
 };
@@ -549,7 +557,7 @@ function loadSampleLists(){ document.getElementById('listsInput').value = SAMPLE
 function loadSampleLineItems(){ document.getElementById('lineItemsInput').value = SAMPLE_LINE_ITEMS; parseAll(); }
 
 function splitRow(row){
-  row = row.trim();
+  row = row.replace(/[\r\n]+$/,'');   // keep leading tabs: a blank first header cell is meaningful
   return (row.includes('\t') ? row.split('\t') : row.split(',')).map(s=>s.trim());
 }
 
@@ -590,6 +598,14 @@ function parseLists(text){
 
     out[rec.name] = rec;
   });
+  // Leaf members = Item Count minus the parent members counted inside it.
+  // A list with a parent hierarchy carries that parent list's members; a top-level list carries its top item.
+  Object.values(out).forEach(rec=>{
+    const parents = rec.parentHierarchy
+      ? (out[rec.parentHierarchy] ? out[rec.parentHierarchy].count : 0)
+      : (rec.topLevel ? 1 : 0);
+    rec.leaf = Math.max(0, rec.count - parents);
+  });
   return out;
 }
 
@@ -609,6 +625,13 @@ let ORIG_LISTS = {};     // snapshot of lists as parsed, used to scale observed 
 
 function jsonField(raw, key){
   try{ const o = JSON.parse(raw); return o ? o[key] : undefined; }catch(e){ return undefined; }
+}
+function timeFields(raw){
+  const v = (raw||'').trim();
+  if(/^\d+$/.test(v)) return { timePeriods: parseInt(v,10), timeScale: '' };   // legacy: explicit period count
+  const k = v.toLowerCase();
+  for(const sc of ['month','quarter','year','week','day']) if(k.startsWith(sc)) return { timePeriods: 0, timeScale: sc };
+  return { timePeriods: 0, timeScale: '' };
 }
 function timeToPeriods(raw){
   const v = (raw||'').trim();
@@ -651,7 +674,13 @@ function normalizeSummary(raw){
 
 // Split "Country, Employee Role" into dimension names. Greedy-matches known list names so
 // that a list whose own name contains a comma is not broken apart.
-function splitDims(str){
+function resolveDim(name){
+  if(LISTS[name]) return name;
+  const base = name.split(':')[0].trim();
+  return LISTS[base] ? base : name;      // "E2 Employees#: Active?" -> parent list "E2 Employees#"
+}
+function splitDims(str){ return splitDimsRaw(str).map(resolveDim); }
+function splitDimsRaw(str){
   const t = (str||'').trim();
   if(NOT_APPLICABLE.has(t.toLowerCase().replace(/\s/g,''))) return [];
   if(!/[;,|]/.test(t)) return [t];
@@ -673,7 +702,7 @@ function splitDims(str){
 function parseLineItems(text){
   const out = [];
   MODULES_META = {};
-  const rows = text.trim().split('\n').filter(l=>l.trim()).map(splitRow);
+  const rows = text.replace(/\r/g,'').split('\n').filter(l=>l.trim()).map(splitRow);
   if(!rows.length) return out;
   const headerNorm = rows[0].map(norm);
 
@@ -704,12 +733,40 @@ function parseLineItems(text){
         module, name, appliesTo: dims, origDims: dims.slice(),
         dataType: normalizeDataType(val(cols,c.format)),
         summary: normalizeSummary(val(cols,c.summary)),
-        timePeriods: timeToPeriods(val(cols,c.timeScale)),
+        ...timeFields(val(cols,c.timeScale)),
         versions: versionsToCount(val(cols,c.versions)),
         cellCount: num(val(cols,c.cells))
       });
     });
     out._source = 'export';
+    return out;
+  }
+
+  /* ---- Format A2: Anaplan "Modules" export (one row per module, with Cell Count) ----
+     Each module becomes a single aggregate record carrying its observed Cell Count. */
+  if(headerNorm.includes('appliesto') && headerNorm.includes('cellcount') && headerNorm.includes('lineitems')
+     && !headerNorm.includes('modulename') && !headerNorm.includes('moduleswithlineitems')){
+    const ix = k => headerNorm.indexOf(k);
+    const c = { applies:ix('appliesto'), timeScale:ix('timescale'), versions:ix('versions'),
+                cells:ix('cellcount'), lis:ix('lineitems') };
+    const val = (cols,i) => i >= 0 && cols[i] !== undefined ? cols[i].trim() : '';
+    rows.slice(1).forEach(cols=>{
+      const name = (cols[0]||'').trim();
+      const cells = parseFloat(String(val(cols,c.cells)).replace(/,/g,''));
+      if(!name) return;
+      if(/^-{2,}/.test(name) && (!(cells > 0))) return;      // section divider rows such as "--- DATA ---"
+      const dims = splitDims(val(cols,c.applies));
+      MODULES_META[name] = { dims, cellCount: isNaN(cells) ? null : cells };
+      out.push({
+        module: name, name: '(module total)', appliesTo: dims, origDims: dims.slice(),
+        dataType: 'Number', summary: 'none', hasSummary: true,
+        ...timeFields(val(cols,c.timeScale)),
+        versions: versionsToCount(val(cols,c.versions)),
+        cellCount: isNaN(cells) ? null : cells,
+        lineItemNames: val(cols,c.lis)
+      });
+    });
+    out._source = 'modules';
     return out;
   }
 
@@ -734,7 +791,7 @@ function parseLineItems(text){
       module, name, appliesTo: dims, origDims: dims.slice(),
       dataType: normalizeDataType(get(cols,'dataType')),
       summary: normalizeSummary(get(cols,'summary') || 'None'),
-      timePeriods: timeToPeriods(get(cols,'timeScale')),
+      ...timeFields(get(cols,'timeScale')),
       versions: versionsToCount(get(cols,'versions')),
       cellCount: null
     });
@@ -744,33 +801,69 @@ function parseLineItems(text){
 }
 
 /* ===================== CORE CALCULATION ===================== */
-// Modelled cell count (used for brand-new line items, or exports without a Cell Count column)
-function modelCells(li, lists){
-  let dimSize = 1;
-  li.appliesTo.forEach(ln=>{ const l = lists[ln]; dimSize *= l ? l.count : 1; });
-  const timeFactor = li.timePeriods > 0 ? li.timePeriods : 1;
-  const versionFactor = li.versions > 0 ? li.versions : 1;
-  const overhead = SUMMARY_OVERHEAD[(li.summary||'none').toLowerCase()] ?? 0;
-  return dimSize * timeFactor * versionFactor * (1 + overhead);
+/* ---- Cell-count rules (validated against Anaplan exports) ----
+   No summary on the line item  -> only leaf members of each list, leaf time periods.
+   Any summary method           -> ALL members of each list including parents, and time summary periods.
+   cells = time periods x members(list 1) x members(list 2) ... x versions                        */
+function calYears(){
+  const el = document.getElementById('calYears'); const v = el ? parseInt(el.value,10) : NaN;
+  return v > 0 ? v : 3;
+}
+function isSummarised(summary){ const k = (summary||'none').toString().trim().toLowerCase(); return k !== '' && k !== 'none'; }
+function liSummarised(li){ return typeof li.hasSummary === 'boolean' ? li.hasSummary : isSummarised(li.summary); }
+function periodsFor(scale, summarised){
+  const per = {month:12, quarter:4, year:1, week:52, day:365}[scale];
+  if(!per) return 1;
+  const y = calYears(), leaf = per * y;
+  return summarised && scale !== 'year' ? leaf + y : leaf;     // one total period per year when summarised
+}
+function timePeriodsFor(li, summarised){
+  if(li.timeScale) return periodsFor(li.timeScale, summarised);
+  if(li.timePeriods > 0) return li.timePeriods;
+  return null;
+}
+function dimMembers(name, lists, summarised){
+  const l = lists[name]; if(!l) return 1;
+  return summarised ? l.count : (l.leaf !== undefined ? l.leaf : l.count);
+}
+function modelBreakdown(li, lists){
+  const sm = liSummarised(li), parts = []; let cells = 1;
+  const tp = timePeriodsFor(li, sm);
+  if(tp !== null){ parts.push({ label: 'Time' + (li.timeScale ? ` (${li.timeScale}${sm && li.timeScale!=='year' ? ' incl. summary' : ''})` : ''), n: tp }); cells *= tp; }
+  li.appliesTo.forEach(d=>{ const n = dimMembers(d, lists, sm); parts.push({ label: d, n }); cells *= n; });
+  if(li.versions > 1){ parts.push({ label:'Versions', n: li.versions }); cells *= li.versions; }
+  return { cells, parts };
+}
+function modelCells(li, lists){ return modelBreakdown(li, lists).cells; }
+function explainNew(li, lists, count){
+  const b = modelBreakdown(li, lists);
+  const f = n => Math.round(n).toLocaleString('en-US');
+  const basis = liSummarised(li) ? 'summary set: all list members incl. parents' : 'no summary: leaf members only';
+  const eq = b.parts.length ? b.parts.map(p=>`${p.label} ${f(p.n)}`).join(' × ') : '1';
+  return `Per new line item (${basis}): ${eq} = ${f(b.cells)} cells` + (count > 1 ? `; × ${count} line items = ${f(b.cells*count)} cells` : '') + '.';
 }
 
-// Observed cell counts are scaled by how much each dimension has changed since the upload:
-// a grown list multiplies by new/old size, a newly added dimension multiplies by its size.
+// Observed cell counts are scaled by how much each dimension changed since the upload.
 function lineItemCells(li, lists){
   if(li.cellCount === null || li.cellCount === undefined) return modelCells(li, lists);
+  const sm = liSummarised(li);
   let factor = 1;
   li.appliesTo.forEach(d=>{
-    const cur = lists[d];
-    if(!cur) return;                                   // subset / system list: cannot scale
+    const cur = lists[d]; if(!cur) return;                       // subset / system list: cannot scale
+    const curN = dimMembers(d, lists, sm);
     if((li.origDims || []).includes(d)){
-      const orig = ORIG_LISTS[d];
-      factor *= (orig && orig.count > 0) ? cur.count / orig.count : 1;
+      const origN = ORIG_LISTS[d] ? dimMembers(d, ORIG_LISTS, sm) : 0;
+      factor *= origN > 0 ? curN / origN : 1;
     } else {
-      factor *= cur.count;
+      factor *= curN;
     }
   });
   return li.cellCount * factor;
 }
+
+// Calibration to the figures Anaplan itself reports (optional, set in step 2)
+let CALIB = { offsetCells:0, offsetMb:0, scale:1 };
+const OTHER_ROW = '(other cells not in export)';
 
 function computeWorkspace(lists, lineItems){
   const modules = {}; // module -> {cells, sizeMb, lineItems}
@@ -780,7 +873,7 @@ function computeWorkspace(lists, lineItems){
   lineItems.forEach(li=>{
     const cells = lineItemCells(li, lists);
     const bpc = BYTES_PER_CELL[(li.dataType||'none').toLowerCase()] ?? 4;
-    const sizeMb = (cells * bpc) / 1e6;
+    const sizeMb = (cells * bpc) / 1e6 * CALIB.scale;
 
     liResults.push({ module: li.module, name: li.name, cells, sizeMb });
     totalCells += cells; totalMb += sizeMb;
@@ -791,6 +884,10 @@ function computeWorkspace(lists, lineItems){
     modules[li.module].lineItems += 1;
   });
 
+  if(CALIB.offsetCells > 0){   // cells Anaplan reports beyond the export; held constant
+    modules[OTHER_ROW] = { cells: CALIB.offsetCells, sizeMb: CALIB.offsetMb, lineItems: 0 };
+    totalCells += CALIB.offsetCells; totalMb += CALIB.offsetMb;
+  }
   return { totalCells, totalMb, modules, liResults };
 }
 
@@ -825,11 +922,12 @@ function parseAll(){
   let unresolved = [];
   LINE_ITEMS.forEach(li=> li.appliesTo.forEach(ln=>{ if(!LISTS[ln] && !unresolved.includes(ln)) unresolved.push(ln); }));
 
-  const isExport = LINE_ITEMS._source === 'export';
+  const isExport = LINE_ITEMS._source === 'export' || LINE_ITEMS._source === 'modules';
   const shown = unresolved.slice(0,6).map(n=>n.length>40 ? n.slice(0,40)+'…' : n).join(', ');
   const moreTxt = unresolved.length>6 ? ', …' : '';
   let msg = `Parsed ${listCount} lists, ${liCount} line items across ${moduleSet.size} modules.`;
-  if(isExport) msg += ' Line-item export detected: observed Cell Count values are used for the current workspace.';
+  if(LINE_ITEMS._source === 'export') msg += ' Line-item export detected: observed Cell Count values are used for the current workspace.';
+  else if(LINE_ITEMS._source === 'modules') msg += ' Module export detected: each module is one record using its observed Cell Count (no per-line-item or data-type detail in this file).';
   else if(LINE_ITEMS._hasHeader) msg += ' Columns matched by header: ' + Object.keys(LINE_ITEMS._mapping).join(', ') + '.';
   if(unresolved.length){
     msg += isExport
@@ -863,7 +961,42 @@ function renderCellGrid(listCount, liCount, newFraction){
 function fmt(n){ return Math.round(n).toLocaleString('en-US'); }
 function fmtMb(n){ return n.toLocaleString('en-US', {maximumFractionDigits:2, minimumFractionDigits:2}) + ' MB'; }
 
+function readNum(id){ const v = parseFloat(String(document.getElementById(id).value).replace(/,/g,'')); return isNaN(v) || v <= 0 ? null : v; }
+
+function deriveCalibration(){
+  CALIB = { offsetCells:0, offsetMb:0, scale:1 };
+  const raw = computeWorkspace(LISTS, LINE_ITEMS);               // uncalibrated model figures
+  const repCells = readNum('calCells'), repMb = readNum('calMb');
+  const noteEl = document.getElementById('calNote');
+  if(raw.totalCells === 0){ noteEl.textContent = ''; return; }
+  const avgMbPerCell = raw.totalMb / raw.totalCells;
+  let offsetCells = 0;
+  if(repCells && repCells > raw.totalCells) offsetCells = repCells - raw.totalCells;
+  const rawWithOffset = raw.totalMb + offsetCells * avgMbPerCell;
+  const scale = repMb ? repMb / rawWithOffset : 1;
+  CALIB = { offsetCells, offsetMb: offsetCells * avgMbPerCell * scale, scale };
+
+  const parts = [];
+  parts.push(`Export total: ${fmt(raw.totalCells)} cells, modelled ${fmtMb(raw.totalMb)}.`);
+  if(repCells){
+    parts.push(repCells > raw.totalCells
+      ? `Anaplan reports ${fmt(repCells)} cells, so ${fmt(offsetCells)} cells are carried as "other cells not in export" (held constant).`
+      : repCells < raw.totalCells
+        ? `Anaplan reports ${fmt(repCells)} cells, ${fmt(raw.totalCells - repCells)} fewer than the export (export may be newer than the figure).`
+        : 'Cell count matches Anaplan exactly.');
+  }
+  if(repMb){
+    const tot = repCells && repCells > raw.totalCells ? repCells : raw.totalCells;
+    parts.push(`Sizes are scaled to Anaplan's ${fmtMb(repMb)} (about ${(repMb*1e6/tot).toFixed(1)} bytes per cell effective, factor x${scale.toFixed(2)}).`);
+  } else {
+    parts.push('Enter Anaplan\'s reported size to calibrate MB figures.');
+  }
+  noteEl.textContent = parts.join(' ');
+}
+
 function renderCurrentSnapshot(){
+  deriveCalibration();
+  document.getElementById('step4').classList.add('hidden');
   const result = computeWorkspace(LISTS, LINE_ITEMS);
   document.getElementById('curTotalCells').textContent = fmt(result.totalCells);
   document.getElementById('curTotalMb').textContent = fmtMb(result.totalMb);
@@ -910,6 +1043,10 @@ function dataTypeSelect(id){
     <option>List</option><option>Time</option><option>Currency</option>
   </select>`;
 }
+function timeScaleSelect(id){
+  return `<select id="${id}"><option>Not applicable</option><option>Month</option><option>Quarter</option><option>Year</option><option>Week</option><option>Day</option></select>`;
+}
+function readTimeScale(id){ const v = document.getElementById(id).value; return v === 'Not applicable' ? '' : v.toLowerCase(); }
 function summarySelect(id){
   return `<select id="${id}">
     <option>None</option><option>Sum</option><option>Average</option><option>Min</option>
@@ -956,7 +1093,7 @@ function renderChangeForm(){
         <div class="field"><label>Summary method</label>${summarySelect('f_liSummary')}</div>
         <div class="field"><label>Versions</label><input type="number" id="f_liVersions" value="1" min="1"></div>
       </div>
-      <div class="field"><label>Time periods (0 = not time scaled, e.g. 12 for monthly × 1yr)</label><input type="number" id="f_liTime" value="0" min="0"></div>`;
+      <div class="field"><label>Time scale</label>${timeScaleSelect('f_liTime')}</div>`;
   }
   else if(type === 'add_module'){
     area.innerHTML = `
@@ -970,7 +1107,7 @@ function renderChangeForm(){
         <div class="field"><label>Summary method</label>${summarySelect('f_modSummary')}</div>
         <div class="field"><label>Versions</label><input type="number" id="f_modVersions" value="1" min="1"></div>
       </div>
-      <div class="field"><label>Time periods (0 = not time scaled, e.g. 12 for monthly × 1yr)</label><input type="number" id="f_modTime" value="0" min="0"></div>`;
+      <div class="field"><label>Time scale</label>${timeScaleSelect('f_modTime')}</div>`;
   }
 }
 
@@ -982,14 +1119,14 @@ function cloneState(){
 function applyChange(){
   const type = document.getElementById('changeType').value;
   let [lists, lineItems] = cloneState();
-  let desc = '';
+  let desc = '', explain = '';
 
   if(type === 'add_list'){
     const name = document.getElementById('f_newListName').value.trim();
     const count = parseInt(document.getElementById('f_newListCount').value, 10);
     const mods = selectedChips('f_newListModules');
     if(!name || !count) return { error: 'Enter a new list name and item count.' };
-    lists[name] = { name, count, hierarchy: 'Flat' };
+    lists[name] = { name, count, leaf: count, hierarchy: 'Flat' };
     lineItems.forEach(li=>{ if(mods.includes(li.module) && !li.appliesTo.includes(name)) li.appliesTo.push(name); });
     desc = `Add List "${name}" (${count.toLocaleString()} items)` + (mods.length ? ` as a dimension on: ${mods.join(', ')}` : ' (not yet wired into any module)');
   }
@@ -999,7 +1136,14 @@ function applyChange(){
     if(!name || !add) return { error: 'Choose a list and an additional item count.' };
     const before = lists[name].count;
     lists[name].count += add;
-    desc = `Grow List "${name}" by ${add.toLocaleString()} items (${before.toLocaleString()} → ${lists[name].count.toLocaleString()})`;
+    lists[name].leaf = (lists[name].leaf !== undefined ? lists[name].leaf : before) + add;   // new items are leaf members
+    const kids = [];
+    Object.values(lists).forEach(x=>{          // lists below this one in the hierarchy gain these items as parent members
+      let cur = x.parentHierarchy, guard = 0;
+      while(cur && guard++ < 10){ if(cur === name){ x.count += add; kids.push(x.name); break; } cur = lists[cur] ? lists[cur].parentHierarchy : ''; }
+    });
+    desc = `Grow List "${name}" by ${add.toLocaleString()} items (${before.toLocaleString()} → ${lists[name].count.toLocaleString()})` +
+      (kids.length ? `; child list(s) ${kids.join(', ')} gain them as parent members` : '');
   }
   else if(type === 'add_line_items'){
     const module = document.getElementById('f_liModule').value;
@@ -1008,12 +1152,13 @@ function applyChange(){
     const dataType = document.getElementById('f_liDataType').value;
     const summary = document.getElementById('f_liSummary').value;
     const versions = parseInt(document.getElementById('f_liVersions').value,10) || 1;
-    const timePeriods = parseInt(document.getElementById('f_liTime').value,10) || 0;
+    const timeScale = readTimeScale('f_liTime');
     if(!module || !count) return { error: 'Choose a module and number of new line items.' };
     for(let i=1;i<=count;i++){
-      lineItems.push({ module, name:`New Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods, versions, cellCount:null });
+      lineItems.push({ module, name:`New Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods:0, timeScale, versions, cellCount:null });
     }
-    desc = `Add ${count} ${dataType} line item(s) to module "${module}" (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
+    explain = explainNew(lineItems[lineItems.length-1], lists, count);
+    desc = `Add ${count} ${dataType} line item(s) to module "${module}" (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timeScale||'no'} time scale, ${versions} version(s), ${summary} summary)`;
   }
   else if(type === 'add_module'){
     const module = document.getElementById('f_modName').value.trim();
@@ -1022,15 +1167,16 @@ function applyChange(){
     const dataType = document.getElementById('f_modDataType').value;
     const summary = document.getElementById('f_modSummary').value;
     const versions = parseInt(document.getElementById('f_modVersions').value,10) || 1;
-    const timePeriods = parseInt(document.getElementById('f_modTime').value,10) || 0;
+    const timeScale = readTimeScale('f_modTime');
     if(!module || !count) return { error: 'Enter a new module name and number of line items.' };
     for(let i=1;i<=count;i++){
-      lineItems.push({ module, name:`${module} Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods, versions, cellCount:null });
+      lineItems.push({ module, name:`${module} Line Item ${i}`, appliesTo:[...dims], origDims:[...dims], dataType, summary: summary.toLowerCase(), timePeriods:0, timeScale, versions, cellCount:null });
     }
-    desc = `Add new Module "${module}" with ${count} line item(s) (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timePeriods||'no'} time periods, ${versions} version(s), ${summary} summary)`;
+    explain = explainNew(lineItems[lineItems.length-1], lists, count);
+    desc = `Add new Module "${module}" with ${count} line item(s) (${dims.length? dims.join(' × ') : 'no list dimension'}, ${timeScale||'no'} time scale, ${versions} version(s), ${summary} summary)`;
   }
 
-  return { lists, lineItems, desc };
+  return { lists, lineItems, desc, explain };
 }
 
 /* ===================== STEP 4: RESULTS ===================== */
@@ -1063,7 +1209,8 @@ function predictImpact(){
 
   document.getElementById('impactNarrative').innerHTML =
     `<b>${outcome.desc}.</b><br>Workspace grows from <b>${fmt(current.totalCells)}</b> to <b>${fmt(projected.totalCells)}</b> cells
-     (≈ ${fmtMb(current.totalMb)} → ${fmtMb(projected.totalMb)}), a change of <b>${fmt(deltaCells)} cells</b>.`;
+     (≈ ${fmtMb(current.totalMb)} → ${fmtMb(projected.totalMb)}), a change of <b>${fmt(deltaCells)} cells</b>.` +
+    (outcome.explain ? `<br><span class="mono" style="font-size:12px;color:var(--text);">${outcome.explain}</span>` : '');
 
   document.getElementById('cCells').textContent = fmt(current.totalCells);
   document.getElementById('cMb').textContent = fmtMb(current.totalMb);

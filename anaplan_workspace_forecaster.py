@@ -13,23 +13,25 @@ console, measured in GB, based on their internal Hyperblock engine).
 This script implements a transparent, defensible APPROXIMATION model that
 is commonly used for capacity planning:
 
-    cells (per line item) = (product of sizes of every List the line item
-                              is dimensioned by, or 1 if it has no list
-                              dimension)
-                             x (Time Periods, or 1 if not time scaled)
-                             x (Versions, or 1 if not versioned)
+    cells (per line item) = time periods
+                             x members of each List it is dimensioned by
+                             x versions
 
-    total cells (per line item) = cells x (1 + summary_overhead(summary_method))
+    * Line item has NO summary  -> count only LEAF list members and leaf
+      time periods            (e.g. 36 x 41 x 53 = 78,228)
+    * Line item has ANY summary -> count ALL list members including parents,
+      and time summary periods (e.g. 39 x 58 x 59 = 133,458)
 
-    approx size (MB) = total cells x bytes_per_cell(data_type) / 1,000,000
+    Leaf members of a list = Item Count minus the parent members counted
+    inside it (the Item Count of its Parent Hierarchy list, or 1 for a
+    top-level item). Time: Month = 12 x calendar years; with a summary one
+    total period per year is added (3 years: 36 without, 39 with).
 
-Summary overhead approximates the extra storage Anaplan reserves for
-calculated summary values (parent rollups, time summaries, ratios, etc.)
-on top of the base leaf-level cells. Bytes-per-cell values approximate
-Anaplan's internal storage per data type. Treat all outputs as directional
-estimates for relative "before vs after" comparison, not as an official
-Anaplan sizing quote -- always validate against Anaplan's own workspace
-usage dashboard before making capacity/licensing decisions.
+    approx size (MB) = cells x bytes_per_cell(data_type) / 1,000,000
+
+Bytes-per-cell values approximate Anaplan's internal storage per data type
+and are only indicative: calibrate to the size Anaplan reports for your
+model before relying on MB figures. Cell counts are the reliable output.
 
 Usage
 -----
@@ -59,16 +61,8 @@ import re
 # have better empirical numbers from Anaplan's workspace usage screen)
 # ---------------------------------------------------------------------------
 
-SUMMARY_OVERHEAD = {
-    "none": 0.0,
-    "sum": 0.10,
-    "average": 0.10,
-    "min": 0.10,
-    "max": 0.10,
-    "weighted average": 0.15,
-    "ratio": 0.15,
-    "formula": 0.20,
-}
+CALENDAR_YEARS = 3          # years in the model calendar (drives time periods)
+PERIODS_PER_YEAR = {"month": 12, "quarter": 4, "year": 1, "week": 52, "day": 365}
 
 BYTES_PER_CELL = {
     "number": 8,
@@ -90,6 +84,7 @@ class ListDef:
     name: str
     count: int
     hierarchy: str = "Flat"
+    leaf: Optional[int] = None   # leaf members (count minus parent members)
     top_level: str = ""
     parent_hierarchy: str = ""
     selective_access: bool = False
@@ -114,7 +109,8 @@ class LineItem:
     applies_to: List[str] = field(default_factory=list)  # list names (dimensions)
     data_type: str = "Number"
     summary: str = "None"
-    time_periods: int = 0   # 0 = not time scaled
+    time_periods: int = 0   # legacy: explicit leaf period count (0 = none)
+    time_scale: str = ""    # month / quarter / year / week / day (preferred)
     versions: int = 1
 
 
@@ -225,7 +221,18 @@ def parse_lists(text: str) -> Dict[str, ListDef]:
             use_top_level_default=bool(values.get("use_top_level_default")),
             delegated=bool(values.get("delegated")),
         )
+    compute_leaf_counts(lists)
     return lists
+
+
+def compute_leaf_counts(lists: Dict[str, ListDef]) -> None:
+    """leaf = Item Count - parent members counted inside it."""
+    for ld in lists.values():
+        if ld.parent_hierarchy:
+            parents = lists[ld.parent_hierarchy].count if ld.parent_hierarchy in lists else 0
+        else:
+            parents = 1 if ld.top_level else 0
+        ld.leaf = max(0, ld.count - parents)
 
 
 def parse_line_items(text: str) -> List[LineItem]:
@@ -251,10 +258,15 @@ def parse_line_items(text: str) -> List[LineItem]:
         ]
         data_type = cols[3] if len(cols) > 3 and cols[3] else "Number"
         summary = cols[4] if len(cols) > 4 and cols[4] else "None"
-        try:
-            time_periods = int(cols[5]) if len(cols) > 5 and cols[5] else 0
-        except ValueError:
-            time_periods = 0
+        time_periods, time_scale = 0, ""
+        raw_time = cols[5].strip() if len(cols) > 5 else ""
+        if raw_time.isdigit():
+            time_periods = int(raw_time)
+        else:
+            for sc in PERIODS_PER_YEAR:
+                if raw_time.lower().startswith(sc):
+                    time_scale = sc
+                    break
         try:
             versions = int(cols[6]) if len(cols) > 6 and cols[6] else 1
         except ValueError:
@@ -262,7 +274,7 @@ def parse_line_items(text: str) -> List[LineItem]:
         items.append(LineItem(
             module=module, name=name, applies_to=applies_to,
             data_type=data_type, summary=summary,
-            time_periods=time_periods, versions=versions,
+            time_periods=time_periods, time_scale=time_scale, versions=versions,
         ))
     return items
 
@@ -271,6 +283,43 @@ def parse_line_items(text: str) -> List[LineItem]:
 # Core calculation
 # ---------------------------------------------------------------------------
 
+def is_summarised(summary: str) -> bool:
+    return (summary or "none").strip().lower() not in ("", "none")
+
+
+def periods_for(scale: str, summarised: bool, years: Optional[int] = None) -> int:
+    per = PERIODS_PER_YEAR.get(scale)
+    if not per:
+        return 1
+    y = years or CALENDAR_YEARS
+    leaf = per * y
+    return leaf + y if summarised and scale != "year" else leaf
+
+
+def dim_members(lists: Dict[str, ListDef], name: str, summarised: bool) -> int:
+    ld = lists.get(name)
+    if ld is None:
+        return 1
+    if summarised:
+        return ld.count
+    return ld.leaf if ld.leaf is not None else ld.count
+
+
+def line_item_cells(lists: Dict[str, ListDef], li: LineItem, years: Optional[int] = None) -> float:
+    """cells = time periods x members of each list x versions (see module docstring)."""
+    sm = is_summarised(li.summary)
+    cells = 1.0
+    if li.time_scale:
+        cells *= periods_for(li.time_scale, sm, years)
+    elif li.time_periods > 0:
+        cells *= li.time_periods
+    for ln in li.applies_to:
+        cells *= dim_members(lists, ln, sm)
+    if li.versions and li.versions > 0:
+        cells *= li.versions
+    return cells
+
+
 def compute_workspace(lists: Dict[str, ListDef], line_items: List[LineItem]) -> WorkspaceResult:
     modules: Dict[str, ModuleResult] = {}
     li_results: List[LineItemResult] = []
@@ -278,17 +327,11 @@ def compute_workspace(lists: Dict[str, ListDef], line_items: List[LineItem]) -> 
     total_mb = 0.0
 
     for li in line_items:
+        sm = is_summarised(li.summary)
         dim_size = 1
         for ln in li.applies_to:
-            list_def = lists.get(ln)
-            dim_size *= list_def.count if list_def else 1  # unknown list -> assume 1
-
-        time_factor = li.time_periods if li.time_periods and li.time_periods > 0 else 1
-        version_factor = li.versions if li.versions and li.versions > 0 else 1
-        base_cells = dim_size * time_factor * version_factor
-
-        overhead = SUMMARY_OVERHEAD.get(li.summary.strip().lower(), 0.0)
-        cells = base_cells * (1 + overhead)
+            dim_size *= dim_members(lists, ln, sm)
+        cells = line_item_cells(lists, li)
 
         bytes_per_cell = BYTES_PER_CELL.get(li.data_type.strip().lower(), 4)
         size_mb = (cells * bytes_per_cell) / 1_000_000
@@ -326,7 +369,7 @@ def add_new_list(lists, line_items, new_name: str, new_count: int,
     onto every existing line item in the given modules."""
     new_lists = copy.deepcopy(lists)
     new_items = copy.deepcopy(line_items)
-    new_lists[new_name] = ListDef(name=new_name, count=new_count)
+    new_lists[new_name] = ListDef(name=new_name, count=new_count, leaf=new_count)
 
     if apply_to_modules:
         for li in new_items:
@@ -340,14 +383,24 @@ def grow_existing_list(lists, line_items, list_name: str, additional_items: int)
     new_lists = copy.deepcopy(lists)
     new_items = copy.deepcopy(line_items)
     if list_name in new_lists:
-        new_lists[list_name].count += additional_items
+        target = new_lists[list_name]
+        target.leaf = (target.leaf if target.leaf is not None else target.count) + additional_items
+        target.count += additional_items          # new items are leaf members
+        for ld in new_lists.values():             # lists below it gain them as parent members
+            cur, guard = ld.parent_hierarchy, 0
+            while cur and guard < 10:
+                if cur == list_name:
+                    ld.count += additional_items
+                    break
+                cur = new_lists[cur].parent_hierarchy if cur in new_lists else ""
+                guard += 1
     return new_lists, new_items
 
 
 def add_line_items(lists, line_items, module: str, count: int,
                     applies_to: List[str], data_type: str, summary: str,
                     time_periods: int = 0, versions: int = 1,
-                    name_prefix: str = "New Line Item"):
+                    time_scale: str = "", name_prefix: str = "New Line Item"):
     """Add N new line items to an existing (or new) module."""
     new_lists = copy.deepcopy(lists)
     new_items = copy.deepcopy(line_items)
@@ -355,19 +408,19 @@ def add_line_items(lists, line_items, module: str, count: int,
         new_items.append(LineItem(
             module=module, name=f"{name_prefix} {i}", applies_to=list(applies_to),
             data_type=data_type, summary=summary,
-            time_periods=time_periods, versions=versions,
+            time_periods=time_periods, time_scale=time_scale, versions=versions,
         ))
     return new_lists, new_items
 
 
 def add_new_module(lists, line_items, module_name: str, line_item_count: int,
                     applies_to: List[str], data_type: str, summary: str,
-                    time_periods: int = 0, versions: int = 1):
+                    time_periods: int = 0, versions: int = 1, time_scale: str = ""):
     """Add a brand-new module with N line items."""
     return add_line_items(
         lists, line_items, module=module_name, count=line_item_count,
         applies_to=applies_to, data_type=data_type, summary=summary,
-        time_periods=time_periods, versions=versions,
+        time_periods=time_periods, versions=versions, time_scale=time_scale,
         name_prefix=f"{module_name} Line Item",
     )
 
@@ -464,7 +517,7 @@ def _demo():
     print("    dimensioned by Product x Region, monthly, 3 versions, Sum summary\n")
     l3, li3 = add_line_items(lists, line_items, module="Revenue Planning", count=4,
                               applies_to=["Product", "Region"], data_type="Number",
-                              summary="Sum", time_periods=12, versions=3)
+                              summary="Sum", time_scale="month", versions=3)
     proj3 = compute_workspace(l3, li3)
     print(format_report(current, proj3,
           "Add 4 Number line items to module 'Revenue Planning' (Product x Region, monthly, 3 versions)"))
@@ -473,11 +526,34 @@ def _demo():
     print("    6 line items dimensioned by Cost Center x Region, monthly, 3 versions\n")
     l4, li4 = add_new_module(lists, line_items, module_name="Capex Planning", line_item_count=6,
                               applies_to=["Cost Center", "Region"], data_type="Number",
-                              summary="Sum", time_periods=12, versions=3)
+                              summary="Sum", time_scale="month", versions=3)
     proj4 = compute_workspace(l4, li4)
     print(format_report(current, proj4,
           "Add new module 'Capex Planning' with 6 line items (Cost Center x Region, monthly, 3 versions)"))
 
 
+def _demo_leaf_vs_summary():
+    """Reproduces an Anaplan-validated example: adding a line item dimensioned by
+    Location x Products on a monthly (3-year) calendar."""
+    def mk(name, count, parent="", top=""):
+        return ListDef(name=name, count=count, parent_hierarchy=parent, top_level=top)
+    lists = {
+        "G1 Region": mk("G1 Region", 4, top="All Regions"),
+        "G2 Country": mk("G2 Country", 17, parent="G1 Region"),
+        "G3 Location": mk("G3 Location", 58, parent="G2 Country"),
+        "P1 Product Family": mk("P1 Product Family", 6, top="All Products"),
+        "P2 Products": mk("P2 Products", 59, parent="P1 Product Family"),
+    }
+    compute_leaf_counts(lists)
+    print("\n>>> LEAF vs SUMMARY example (Location x Products, monthly, 3-year calendar)")
+    print(f"    leaf members: Location={lists['G3 Location'].leaf}, Products={lists['P2 Products'].leaf}")
+    for summary in ("None", "Sum"):
+        _, items = add_line_items(lists, [], module="REV03 Margin Calculation", count=1,
+                                  applies_to=["G3 Location", "P2 Products"], data_type="Number",
+                                  summary=summary, time_scale="month")
+        print(f"    summary={summary:<4} -> {line_item_cells(lists, items[0]):,.0f} cells")
+
+
 if __name__ == "__main__":
     _demo()
+    _demo_leaf_vs_summary()
