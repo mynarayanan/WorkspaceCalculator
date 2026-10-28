@@ -356,6 +356,7 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
         <div class="field"><label>Anaplan reported model size (MB)</label><input type="number" id="calMb" min="0" step="0.01" placeholder="e.g. 15.1" oninput="renderCurrentSnapshot()"></div>
       </div>
       <div class="status-line" id="calNote"></div>
+      <div class="status-line" id="splitNote"></div>
     </div>
 
     <div class="snapshot-grid">
@@ -401,7 +402,11 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
 
       <div class="field">
         <label>Calendar years in the model (drives time periods)</label>
-        <input type="number" id="calYears" value="3" min="1" style="max-width:160px">
+        <div class="field-grid" style="max-width:420px;">
+          <div><input type="number" id="calYears" value="3" min="1" oninput="renderCurrentSnapshot()"></div>
+          <div><input type="number" id="calVersions" value="3" min="1" oninput="renderCurrentSnapshot()"></div>
+        </div>
+        <div class="hint" style="margin:4px 0 0;">Left: calendar years. Right: versions in the model (used when a module is versioned "All").</div>
         <div class="hint" style="margin:6px 0 0;">Month = 12 × years. <b>No summary</b> on a line item counts leaf list members and leaf time periods only (e.g. 36 × 41 × 53). <b>Any summary</b> counts all list members including parents plus one total period per year (e.g. 39 × 58 × 59).</div>
       </div>
 
@@ -763,7 +768,9 @@ function parseLineItems(text){
         ...timeFields(val(cols,c.timeScale)),
         versions: versionsToCount(val(cols,c.versions)),
         cellCount: isNaN(cells) ? null : cells,
-        lineItemNames: val(cols,c.lis)
+        lineItemNames: val(cols,c.lis),
+        lineItemCount: val(cols,c.lis).split(',').filter(x=>x.trim()).length,
+        versionsRaw: val(cols,c.versions)
       });
     });
     out._source = 'modules';
@@ -844,9 +851,7 @@ function explainNew(li, lists, count){
 }
 
 // Observed cell counts are scaled by how much each dimension changed since the upload.
-function lineItemCells(li, lists){
-  if(li.cellCount === null || li.cellCount === undefined) return modelCells(li, lists);
-  const sm = liSummarised(li);
+function scaleFactor(li, lists, sm){
   let factor = 1;
   li.appliesTo.forEach(d=>{
     const cur = lists[d]; if(!cur) return;                       // subset / system list: cannot scale
@@ -858,7 +863,56 @@ function lineItemCells(li, lists){
       factor *= curN;
     }
   });
-  return li.cellCount * factor;
+  return factor;
+}
+function lineItemCells(li, lists){
+  if(li.cellCount === null || li.cellCount === undefined) return modelCells(li, lists);
+  if(li.segments) return li.segments.reduce((t,sg)=> t + sg.cells * scaleFactor(li, lists, sg.sm), 0);
+  return li.cellCount * scaleFactor(li, lists, liSummarised(li));
+}
+
+/* A module-level export gives one cell count per module, not per line item. Because
+   summarised line items (all members incl. parents) and non-summarised ones (leaf members)
+   have different sizes, the number of summarised line items in a module can be solved from
+   its total:  cells = a x S + (k - a) x N.  The split decides how the module reacts to changes. */
+function calVersions(){
+  const el = document.getElementById('calVersions'); const v = el ? parseInt(el.value,10) : NaN;
+  return v > 0 ? v : 3;
+}
+function versionCount(raw){
+  const v = (raw||'').trim();
+  if(/^\d+$/.test(v)) return Math.max(1, parseInt(v,10));
+  const k = v.toLowerCase().replace(/\s/g,'');
+  if(NOT_APPLICABLE.has(k)) return 1;
+  if(k === 'all') return calVersions();
+  const l = ORIG_LISTS[v]; return l && l.count > 0 ? l.count : 1;
+}
+function inferModuleSegments(){
+  let exact = 0, total = 0; const approx = [];
+  LINE_ITEMS.forEach(li=>{
+    if(li.lineItemCount === undefined) return;               // only module-level records
+    total++; li.segments = null;
+    const c = li.cellCount || 0, k = li.lineItemCount;
+    if(c <= 0 || k <= 0){ exact++; return; }
+    const base = { appliesTo: li.origDims, timeScale: li.timeScale, timePeriods: li.timePeriods, versions: versionCount(li.versionsRaw) };
+    const S = modelCells({ ...base, summary:'sum' }, ORIG_LISTS);
+    const N = modelCells({ ...base, summary:'none' }, ORIG_LISTS);
+    if(Math.abs(S - N) < 0.5){ li.segments = [{ sm:false, cells:c }]; exact++; return; }
+    let a = (c - k*N) / (S - N); const aInt = Math.round(a);
+    let segs;
+    if(aInt >= 0 && aInt <= k && Math.abs(aInt*S + (k-aInt)*N - c) < 0.5){
+      segs = [{ sm:true, cells:aInt*S }, { sm:false, cells:(k-aInt)*N }]; exact++;
+    } else {                                                  // no exact fit: best-fit share, scaled to the observed total
+      a = Math.min(k, Math.max(0, a)); const w = a*S + (k-a)*N, f = w > 0 ? c/w : 1;
+      segs = [{ sm:true, cells:a*S*f }, { sm:false, cells:(k-a)*N*f }]; approx.push(li.module);
+    }
+    li.segments = segs.filter(sg=>sg.cells > 0);
+  });
+  const el = document.getElementById('splitNote');
+  if(el) el.textContent = total
+    ? `Module totals explained exactly by the summary / no-summary rule: ${exact} of ${total}` +
+      (approx.length ? `. Best-fit estimate used for: ${approx.slice(0,4).join(', ')}${approx.length>4?', …':''}.` : '.')
+    : '';
 }
 
 // Calibration to the figures Anaplan itself reports (optional, set in step 2)
@@ -995,6 +1049,7 @@ function deriveCalibration(){
 }
 
 function renderCurrentSnapshot(){
+  inferModuleSegments();
   deriveCalibration();
   document.getElementById('step4').classList.add('hidden');
   const result = computeWorkspace(LISTS, LINE_ITEMS);
