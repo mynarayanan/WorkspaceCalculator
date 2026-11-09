@@ -382,6 +382,14 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
         </table>
       </div>
     </div>
+    <div class="card" style="margin-top:22px;">
+      <h3>Memory by data type <span class="format-tag">sizes per cell / item</span></h3>
+      <p class="hint">Number 8 B · Text 8 B · Boolean 1 B · List 4 B · Time period 4 B · Date 4 B · No data 0 B · list item name 500 B · item code 0 B. Sizes use 1 MB = 1,000,000 bytes.</p>
+      <table id="typeTable">
+        <thead><tr><th>Data type</th><th class="num">Cells / items</th><th class="num">Bytes each</th><th class="num">Est. MB</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <!-- STEP 3: CHANGE CONFIG -->
@@ -455,17 +463,25 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
       <div id="barChart"></div>
     </div>
 
+    <div class="card" style="margin-bottom:20px;">
+      <h3>Memory by data type: current vs projected</h3>
+      <table id="typeCompareTable">
+        <thead><tr><th>Data type</th><th class="num">Current MB</th><th class="num">Projected MB</th><th class="num">Δ MB</th><th class="num">Δ cells / items</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <div class="card">
       <h3>Module-level detail</h3>
       <table id="resultTable">
-        <thead><tr><th>Module</th><th class="num">Current cells</th><th class="num">Projected cells</th><th class="num">Δ %</th><th>Status</th></tr></thead>
+        <thead><tr><th>Module</th><th class="num">Current cells</th><th class="num">Projected cells</th><th class="num">Δ %</th><th class="num">Δ MB</th><th>Status</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
 
   <div class="disclaimer">
-    <b>Model note:</b> cells = time periods × list members × versions. Without a summary only leaf members count; with any summary all members (parents included) and time summary periods count. Existing cell counts come from your export and are scaled when lists change; MB is indicative unless calibrated to Anaplan's reported size.</div>
+    <b>Model note:</b> cells = time periods × list members × versions. Without a summary only leaf members count; with any summary all members (parents included) and time summary periods count. Memory = cells × bytes per data type (Number 8, Text 8, Boolean 1, List 4, Time period 4, Date 4, No data 0) + 500 bytes per list item name. Existing cell counts come from your export and are scaled when lists change; MB can be calibrated to Anaplan's reported size.</div>
 
   <footer>Cellcast — Anaplan Workspace Capacity Forecaster</footer>
 </div>
@@ -475,9 +491,12 @@ Workforce Planning, Headcount, Employee;Cost Center, Number, Sum, 12, 1"></texta
 let LISTS = {};       // name -> {name, count, hierarchy}
 let LINE_ITEMS = [];  // [{module, name, appliesTo[], dataType, summary, timePeriods, versions}]
 
+// Storage per cell by line-item format, and per list item name (supplied sizing table)
 const BYTES_PER_CELL = {
-  'number':8,'boolean':1,'text':16,'list':4,'time':4,'currency':8,'none':4
+  'number':8, 'text':8, 'boolean':1, 'list':4, 'time period':4, 'time':4, 'date':4,
+  'no data':0, 'none':0, 'currency':8
 };
+const ITEM_NAME_BYTES = 500;   // each list item name; item codes add 0
 
 const SAMPLE_LISTS = `Name\tTop Level\tParent Hierarchy\tSelective Access\tProduction Data\tManaged By\tHas Workflow\tProperties\tSubsets\tNumbered\tDisplay Name Property\tIs Organization\tCategory\tData Tags\tItem Count\tNotes\tReferenced in Applies To\tReferenced as Format\tReferenced in Formula\tNext item index\tUse Top Level As Default Page\tDelegated
 Users\t\t\t\tTRUE\t\tFALSE\t\t\tFALSE\t\tFALSE\t\t\t30\t\t\t\t\t606\tFALSE\tFALSE
@@ -661,15 +680,18 @@ function normalizeDataType(raw){
   let k = (raw||'Number').trim();
   if(k.startsWith('{')){
     const dt = String(jsonField(k,'dataType') || 'NUMBER').toUpperCase();
-    return ({NUMBER:'Number',ENTITY:'List',BOOLEAN:'Boolean',TEXT:'Text',DATE:'Time',TIME_ENTITY:'Time',NONE:'None'})[dt] || 'Number';
+    const map = { NUMBER:'Number', ENTITY:'List', BOOLEAN:'Boolean', TEXT:'Text', DATE:'Date', NONE:'No data' };
+    if(map[dt]) return map[dt];
+    return dt.includes('TIME') ? 'Time period' : 'Number';
   }
   k = k.toLowerCase();
   if(k.startsWith('list')) return 'List';
   if(k.startsWith('bool')) return 'Boolean';
   if(k.startsWith('text')) return 'Text';
-  if(k.startsWith('date') || k.startsWith('time')) return 'Time';
-  if(k.includes('currency')) return 'Currency';
-  return 'Number';
+  if(k.startsWith('date')) return 'Date';
+  if(k.startsWith('time')) return 'Time period';
+  if(k === 'none' || k.startsWith('no data')) return 'No data';
+  return 'Number';                       // includes currency / numeric formats
 }
 function normalizeSummary(raw){
   const k = (raw||'None').trim();
@@ -919,14 +941,25 @@ function inferModuleSegments(){
 let CALIB = { offsetCells:0, offsetMb:0, scale:1 };
 const OTHER_ROW = '(other cells not in export)';
 
+const LIST_ROW = '(list item names)';
+// Distinct item names: a list with a parent hierarchy holds its parents as members already counted
+// in the parent list, so only its own (leaf) items add name storage.
+function listNameItems(l, lists){
+  const hasParent = l.parentHierarchy && lists[l.parentHierarchy];
+  return hasParent ? (l.leaf !== undefined ? l.leaf : l.count) : l.count;
+}
+function moduleCount(r){ return Object.keys(r.modules).filter(k=>!k.startsWith('(')).length; }
+
 function computeWorkspace(lists, lineItems){
   const modules = {}; // module -> {cells, sizeMb, lineItems}
+  const byType = {};  // data type -> {cells, sizeMb, bytes}
   let totalCells = 0, totalMb = 0;
   const liResults = [];
 
   lineItems.forEach(li=>{
     const cells = lineItemCells(li, lists);
-    const bpc = BYTES_PER_CELL[(li.dataType||'none').toLowerCase()] ?? 4;
+    const type = li.dataType || 'Number';
+    const bpc = BYTES_PER_CELL[type.toLowerCase()] ?? 8;
     const sizeMb = (cells * bpc) / 1e6 * CALIB.scale;
 
     liResults.push({ module: li.module, name: li.name, cells, sizeMb });
@@ -936,13 +969,25 @@ function computeWorkspace(lists, lineItems){
     modules[li.module].cells += cells;
     modules[li.module].sizeMb += sizeMb;
     modules[li.module].lineItems += 1;
+
+    if(!byType[type]) byType[type] = { cells:0, sizeMb:0, bytes:bpc };
+    byType[type].cells += cells; byType[type].sizeMb += sizeMb;
   });
+
+  let nameItems = 0;
+  Object.values(lists).forEach(l=>{ nameItems += listNameItems(l, lists); });
+  if(nameItems > 0){
+    const listMb = nameItems * ITEM_NAME_BYTES / 1e6 * CALIB.scale;
+    modules[LIST_ROW] = { cells:0, sizeMb:listMb, lineItems:0 };
+    byType['List item names'] = { cells:nameItems, sizeMb:listMb, bytes:ITEM_NAME_BYTES };
+    totalMb += listMb;
+  }
 
   if(CALIB.offsetCells > 0){   // cells Anaplan reports beyond the export; held constant
     modules[OTHER_ROW] = { cells: CALIB.offsetCells, sizeMb: CALIB.offsetMb, lineItems: 0 };
     totalCells += CALIB.offsetCells; totalMb += CALIB.offsetMb;
   }
-  return { totalCells, totalMb, modules, liResults };
+  return { totalCells, totalMb, modules, byType, liResults };
 }
 
 /* ===================== STEP 1: PARSE + UI SYNC ===================== */
@@ -1023,7 +1068,7 @@ function deriveCalibration(){
   const repCells = readNum('calCells'), repMb = readNum('calMb');
   const noteEl = document.getElementById('calNote');
   if(raw.totalCells === 0){ noteEl.textContent = ''; return; }
-  const avgMbPerCell = raw.totalMb / raw.totalCells;
+  const avgMbPerCell = (raw.totalMb - ((raw.modules[LIST_ROW] || {}).sizeMb || 0)) / raw.totalCells;
   let offsetCells = 0;
   if(repCells && repCells > raw.totalCells) offsetCells = repCells - raw.totalCells;
   const rawWithOffset = raw.totalMb + offsetCells * avgMbPerCell;
@@ -1055,7 +1100,7 @@ function renderCurrentSnapshot(){
   const result = computeWorkspace(LISTS, LINE_ITEMS);
   document.getElementById('curTotalCells').textContent = fmt(result.totalCells);
   document.getElementById('curTotalMb').textContent = fmtMb(result.totalMb);
-  document.getElementById('curModuleCount').textContent = Object.keys(result.modules).length;
+  document.getElementById('curModuleCount').textContent = moduleCount(result);
   document.getElementById('curLineItemCount').textContent = LINE_ITEMS.length;
 
   const tbody = document.querySelector('#currentTable tbody');
@@ -1075,6 +1120,7 @@ function renderCurrentSnapshot(){
   });
 
   renderCellGrid(Object.keys(LISTS).length, LINE_ITEMS.length, 0);
+  renderTypeTable(result);
   window._currentResult = result;
 }
 
@@ -1095,7 +1141,7 @@ function selectedChips(id){ return [...document.querySelectorAll('#'+id+' .chip.
 function dataTypeSelect(id){
   return `<select id="${id}">
     <option>Number</option><option>Text</option><option>Boolean</option>
-    <option>List</option><option>Time</option><option>Currency</option>
+    <option>List</option><option>Time period</option><option>Date</option><option>No data</option>
   </select>`;
 }
 function timeScaleSelect(id){
@@ -1269,11 +1315,11 @@ function predictImpact(){
 
   document.getElementById('cCells').textContent = fmt(current.totalCells);
   document.getElementById('cMb').textContent = fmtMb(current.totalMb);
-  document.getElementById('cMods').textContent = Object.keys(current.modules).length;
+  document.getElementById('cMods').textContent = moduleCount(current);
 
   document.getElementById('pCells').textContent = fmt(projected.totalCells);
   document.getElementById('pMb').textContent = fmtMb(projected.totalMb);
-  document.getElementById('pMods').textContent = Object.keys(projected.modules).length;
+  document.getElementById('pMods').textContent = moduleCount(projected);
 
   document.getElementById('dCells').textContent = (deltaCells>=0?'+':'') + fmt(deltaCells);
   document.getElementById('dMb').textContent = (deltaMb>=0?'+':'') + fmtMb(deltaMb);
@@ -1281,6 +1327,7 @@ function predictImpact(){
 
   renderBarChart(current, projected);
   renderResultTable(current, projected);
+  renderTypeCompare(current, projected);
   renderCellGrid(Object.keys(outcome.lists).length, outcome.lineItems.length, Math.min(0.6, Math.max(0.05, pct/100)));
 
   document.getElementById('step4').classList.remove('hidden');
@@ -1313,12 +1360,33 @@ function renderResultTable(current, projected){
   allMods.forEach(m=>{
     const c = current.modules[m], p = projected.modules[m];
     const cCells = c?c.cells:0, pCells = p?p.cells:0;
+    const dMb = (p?p.sizeMb:0) - (c?c.sizeMb:0);
     const modPct = cCells ? ((pCells-cCells)/cCells*100) : (pCells?100:0);
     let tag = '<span class="tag flat">Unchanged</span>';
     if(!c && p) tag = '<span class="tag new">New module</span>';
-    else if(Math.abs(modPct) > 0.01) tag = '<span class="tag grown">Changed</span>';
+    else if(Math.abs(modPct) > 0.01 || Math.abs(dMb) > 1e-9) tag = '<span class="tag grown">Changed</span>';
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${m}</td><td class="num">${fmt(cCells)}</td><td class="num">${fmt(pCells)}</td><td class="num">${modPct>=0?'+':''}${modPct.toFixed(1)}%</td><td>${tag}</td>`;
+    tr.innerHTML = `<td>${m}</td><td class="num">${fmt(cCells)}</td><td class="num">${fmt(pCells)}</td><td class="num">${modPct>=0?'+':''}${modPct.toFixed(1)}%</td><td class="num">${dMb>=0?'+':''}${dMb.toFixed(3)}</td><td>${tag}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderTypeTable(result){
+  const tbody = document.querySelector('#typeTable tbody'); tbody.innerHTML = '';
+  Object.entries(result.byType || {}).sort((a,b)=>b[1].sizeMb-a[1].sizeMb).forEach(([t, v])=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${t}</td><td class="num">${fmt(v.cells)}</td><td class="num">${v.bytes}</td><td class="num">${fmtMb(v.sizeMb)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+function renderTypeCompare(current, projected){
+  const tbody = document.querySelector('#typeCompareTable tbody'); tbody.innerHTML = '';
+  const types = [...new Set([...Object.keys(current.byType||{}), ...Object.keys(projected.byType||{})])];
+  types.sort((a,b)=>((projected.byType[b]||{}).sizeMb||0)-((projected.byType[a]||{}).sizeMb||0)).forEach(t=>{
+    const c = (current.byType||{})[t] || {cells:0,sizeMb:0}, p = (projected.byType||{})[t] || {cells:0,sizeMb:0};
+    const dMb = p.sizeMb - c.sizeMb, dC = p.cells - c.cells;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${t}</td><td class="num">${c.sizeMb.toFixed(3)}</td><td class="num">${p.sizeMb.toFixed(3)}</td><td class="num">${dMb>=0?'+':''}${dMb.toFixed(3)}</td><td class="num">${dC>=0?'+':''}${fmt(dC)}</td>`;
     tbody.appendChild(tr);
   });
 }
