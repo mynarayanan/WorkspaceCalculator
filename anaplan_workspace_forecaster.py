@@ -27,7 +27,8 @@ is commonly used for capacity planning:
     top-level item). Time: Month = 12 x calendar years; with a summary one
     total period per year is added (3 years: 36 without, 39 with).
 
-    approx size (MB) = cells x bytes_per_cell(data_type) / 1,000,000
+    approx size (MB) = (cells x bytes_per_cell(data_type)
+                        + list item names x 500 bytes) / 1,000,000
 
 Bytes-per-cell values approximate Anaplan's internal storage per data type
 and are only indicative: calibrate to the size Anaplan reports for your
@@ -64,15 +65,13 @@ import re
 CALENDAR_YEARS = 3          # years in the model calendar (drives time periods)
 PERIODS_PER_YEAR = {"month": 12, "quarter": 4, "year": 1, "week": 52, "day": 365}
 
+# Storage per cell by line-item format and per list item name (supplied sizing table)
 BYTES_PER_CELL = {
-    "number": 8,
-    "boolean": 1,
-    "text": 16,
-    "list": 4,
-    "time": 4,
-    "currency": 8,
-    "none": 4,
+    "number": 8, "text": 8, "boolean": 1, "list": 4,
+    "time period": 4, "time": 4, "date": 4,
+    "no data": 0, "none": 0, "currency": 8,
 }
+ITEM_NAME_BYTES = 500   # each list item name; item codes add 0
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +136,7 @@ class WorkspaceResult:
     total_size_mb: float
     modules: Dict[str, ModuleResult]
     line_item_results: List[LineItemResult]
+    list_items_mb: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ def compute_workspace(lists: Dict[str, ListDef], line_items: List[LineItem]) -> 
             dim_size *= dim_members(lists, ln, sm)
         cells = line_item_cells(lists, li)
 
-        bytes_per_cell = BYTES_PER_CELL.get(li.data_type.strip().lower(), 4)
+        bytes_per_cell = BYTES_PER_CELL.get(li.data_type.strip().lower(), 8)
         size_mb = (cells * bytes_per_cell) / 1_000_000
 
         li_results.append(LineItemResult(
@@ -352,9 +352,18 @@ def compute_workspace(lists: Dict[str, ListDef], line_items: List[LineItem]) -> 
             mod.size_mb += size_mb
             mod.line_items += 1
 
+    # Distinct list item names: a list with a parent hierarchy already counts its parents
+    # in the parent list, so only its leaf items add name storage.
+    name_items = 0
+    for ld in lists.values():
+        has_parent = bool(ld.parent_hierarchy) and ld.parent_hierarchy in lists
+        name_items += (ld.leaf if (has_parent and ld.leaf is not None) else ld.count)
+    list_mb = name_items * ITEM_NAME_BYTES / 1_000_000
+    total_mb += list_mb
+
     return WorkspaceResult(
         total_cells=total_cells, total_size_mb=total_mb,
-        modules=modules, line_item_results=li_results,
+        modules=modules, line_item_results=li_results, list_items_mb=list_mb,
     )
 
 
